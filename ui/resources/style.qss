@@ -1,0 +1,187 @@
+/* ═══════════════════════════════════════════════
+   Web Cloner — Ultra-Premium High-Fidelity Theme
+   ═══════════════════════════════════════════════ */
+
+/* ── Global ── */
+QWidget {
+    background-color: #0d1117;
+    color: #e6edf3;
+    font-family: "Segoe UI Variable Text", "Inter", "Roboto", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow {
+    background-color: #080c10;
+}
+
+/* ── URL Input Bar ── */
+UrlInputBar {
+    background-color: rgba(22, 27, 34, 0.7);
+    border: 1px solid #30363d;
+    border-radius: 16px;
+    padding: 10px;
+}
+
+QLineEdit#urlInput {
+    background-color: #010409;
+    color: #ffffff;
+    border: 2px solid #30363d;
+    border-radius: 12px;
+    padding: 14px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    selection-background-color: #1f6feb;
+}
+
+QLineEdit#urlInput:focus {
+    border-color: #58a6ff;
+    background-color: #0d1117;
+}
+
+/* ── Control Buttons ── */
+QPushButton#cloneButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #238636, stop:1 #2ea043);
+    color: #ffffff;
+    border: none;
+    border-radius: 12px;
+    padding: 14px 32px;
+    font-size: 15px;
+    font-weight: 800;
+    min-width: 150px;
+}
+
+QPushButton#cloneButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #2ea043, stop:1 #3fb950);
+}
+
+QPushButton#stopButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #da3633, stop:1 #f85149);
+    color: #ffffff;
+    border: none;
+    border-radius: 12px;
+    padding: 14px 32px;
+    font-size: 15px;
+    font-weight: 800;
+}
+
+/* ── Progress Panel (Glassmorphism) ── */
+ProgressPanel {
+    background-color: rgba(22, 27, 34, 0.4);
+    border: 1px solid rgba(48, 54, 61, 0.6);
+    border-radius: 16px;
+    padding: 15px;
+}
+
+QLabel#sectionLabel {
+    color: #58a6ff;
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+QLabel#statusLabel {
+    color: #c9d1d9;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    background-color: #21262d;
+    border-radius: 8px;
+}
+
+QLabel#etaLabel {
+    color: #ff9d00;
+    font-family: "Consolas", "Cascadia Code", monospace;
+    font-size: 14px;
+    font-weight: 800;
+    padding: 2px 8px;
+    background-color: rgba(255, 157, 0, 0.1);
+    border-radius: 6px;
+}
+
+QLabel#spinnerLabel {
+    font-size: 18px;
+}
+
+QProgressBar {
+    background-color: #010409;
+    border: 1px solid #161b22;
+    border-radius: 6px;
+    height: 14px;
+    text-align: center;
+    color: transparent; /* Text is hidden inside chunk */
+}
+
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #1f6feb, stop:0.5 #58a6ff, stop:1 #79c0ff);
+    border-radius: 5px;
+}
+
+/* ── Log Viewer (Premium Terminal) ── */
+LogViewer {
+    background-color: #010409;
+    border: 1px solid #30363d;
+    border-radius: 16px;
+    padding: 2px;
+}
+
+QTextEdit#logViewer {
+    background-color: transparent;
+    color: #d1d5db;
+    border: none;
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* ── Footer Buttons ── */
+QPushButton#previewButton, QPushButton#openFolderButton {
+    background-color: #21262d;
+    color: #c9d1d9;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 10px 24px;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+QPushButton#previewButton:hover, QPushButton#openFolderButton:hover {
+    background-color: #30363d;
+    border-color: #58a6ff;
+    color: #58a6ff;
+}
+
+QPushButton#previewButton:disabled {
+    background-color: #0d1117;
+    color: #484f58;
+    border-color: #21262d;
+}
+
+/* ── Scroll Bars ── */
+QScrollBar:vertical {
+    background-color: transparent;
+    width: 10px;
+    margin: 4px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #30363d;
+    border-radius: 5px;
+    min-height: 40px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #484f58;
+}
+
+QStatusBar {
+    background-color: #010409;
+    color: #8b949e;
+    border-top: 1px solid #21262d;
+    padding: 6px;
+    font-size: 11px;
+}
