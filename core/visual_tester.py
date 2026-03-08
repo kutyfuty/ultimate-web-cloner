@@ -126,7 +126,10 @@ class VisualTester(QObject):
             similarity = max(0.0, min(100.0, 100.0 - (rms / 255.0 * 100.0)))
 
             # Save difference map (4x amplify for visibility)
-            diff.point(lambda x: min(255, x * 4)).save(
+            # Use a lookup table instead of lambda — required by Pillow 10+
+            lut = [min(255, i * 4) for i in range(256)]
+            num_bands = len(diff.getbands())
+            diff.point(lut * num_bands).save(
                 str(self.output_dir / "visual_diff.png")
             )
 
