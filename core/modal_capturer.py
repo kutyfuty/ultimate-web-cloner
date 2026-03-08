@@ -501,41 +501,39 @@ class ModalCapturer(QObject):
             output_file.write_text(rewritten_html, encoding="utf-8")
             self.log_message.emit(f"   📄 Saved: {output_file.name}")
 
-            # Rewrite URLs in fragment HTML (relative + absolute)
-            from bs4 import BeautifulSoup as _BS
+            # Rewrite URLs in fragment HTML using regex — no BeautifulSoup to avoid corruption
             import re as _re
-            frag_soup = _BS(updated_fragment, 'html.parser')
 
-            # Rewrite src, href, data-src, poster attributes
-            for tag in frag_soup.find_all(True):
-                for attr in ['src', 'href', 'data-src', 'poster']:
-                    val = tag.get(attr)
-                    if not val or not isinstance(val, str):
-                        continue
-                    if val.startswith('data:') or val.startswith('#') or val.startswith('javascript:'):
-                        continue
+            def _rewrite_frag_attr(m: re.Match) -> str:
+                attr_eq_q = m.group(1)   # e.g. src="
+                url       = m.group(2)
+                close_q   = m.group(3)
+                if not url or url.startswith(('data:', '#', 'javascript:', 'blob:')):
+                    return m.group(0)
+                abs_url = urljoin(base_url, url)
+                local = shared_asset_mgr._find_local_path(abs_url)
+                if local:
+                    return attr_eq_q + local + close_q
+                return m.group(0)
 
-                    # Relative → absolute
-                    abs_url = urljoin(base_url, val)
+            # Double-quoted attributes
+            rewritten_fragment = _re.sub(
+                r'(\b(?:src|href|data-src|poster)=")([^"]+?)(")',
+                _rewrite_frag_attr, updated_fragment)
+            # Single-quoted attributes
+            rewritten_fragment = _re.sub(
+                r"(\b(?:src|href|data-src|poster)=')([^']+?)(')",
+                _rewrite_frag_attr, rewritten_fragment)
 
-                    # Find local path from AssetManager
-                    local = shared_asset_mgr._find_local_path(abs_url)
-                    if local:
-                        tag[attr] = local
+            def _rewrite_frag_css_url(m: re.Match) -> str:
+                raw = m.group(1).strip().strip('\'"')
+                if not raw or raw.startswith(('data:', 'blob:')):
+                    return m.group(0)
+                abs_u = urljoin(base_url, raw)
+                loc = shared_asset_mgr._find_local_path(abs_u)
+                return f"url('{loc}')" if loc else m.group(0)
 
-                # url() references in style attribute
-                style_val = tag.get('style', '')
-                if style_val and 'url(' in style_val:
-                    def _rewrite_style_url(m):
-                        raw = m.group(1).strip('\'"')
-                        if raw.startswith('data:'):
-                            return m.group(0)
-                        abs_u = urljoin(base_url, raw)
-                        loc = shared_asset_mgr._find_local_path(abs_u)
-                        return f"url('{loc}')" if loc else m.group(0)
-                    tag['style'] = _re.sub(r'url\(([^)]+)\)', _rewrite_style_url, style_val)
-
-            rewritten_fragment = str(frag_soup)
+            rewritten_fragment = _re.sub(r'url\(([^)]+)\)', _rewrite_frag_css_url, rewritten_fragment)
 
             return {
                 'filename': output_file.name,
@@ -572,29 +570,21 @@ class ModalCapturer(QObject):
     ) -> None:
         """Save the modal as a standalone HTML page."""
 
-        from bs4 import BeautifulSoup
-
         # Save resources — let asset_mgr build the _url_to_local mapping
         asset_mgr = AssetManager(output_dir)
         await asset_mgr.save_resources(shared_resources, shared_content_types)
 
-        # Get the <head> section of the main page (inline CSS + fonts)
-        soup = BeautifulSoup(full_html, "html.parser")
-        head = soup.find("head")
+        # Extract <style> and <link> tags from <head> using regex — no BeautifulSoup
         head_content = ""
-
-        if head:
-            # Get style tags
-            for style_tag in head.find_all("style"):
-                head_content += str(style_tag) + "\n"
-
-            # Get link tags (CSS + fonts)
-            for link_tag in head.find_all("link"):
-                rel = link_tag.get("rel", [])
-                if isinstance(rel, list):
-                    rel = " ".join(rel)
-                if "stylesheet" in rel or "font" in link_tag.get("href", ""):
-                    head_content += str(link_tag) + "\n"
+        head_match = re.search(r'<head\b[^>]*>(.*?)</head>', full_html, re.IGNORECASE | re.DOTALL)
+        if head_match:
+            head_html = head_match.group(1)
+            for style_m in re.finditer(r'<style\b[^>]*>.*?</style>', head_html, re.IGNORECASE | re.DOTALL):
+                head_content += style_m.group(0) + "\n"
+            for link_m in re.finditer(r'<link\b[^>]*/?\s*>', head_html, re.IGNORECASE):
+                tag_str = link_m.group(0)
+                if 'stylesheet' in tag_str or ('font' in tag_str and 'href' in tag_str):
+                    head_content += tag_str + "\n"
 
         # Convert URLs in modal HTML to local paths
         processed_modal = modal_html

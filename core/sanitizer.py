@@ -143,19 +143,19 @@ class DataSanitizer:
         # 3. Auto-detected balances
         html = self._sanitize_auto_balances(html)
 
-        # 4. Phone numbers
-        html = self._PHONE_RE.sub(self.PHONE_PLACEHOLDER, html)
+        # 4. Phone numbers (text content only — not in URLs/attributes)
+        html = self._replace_in_text_content(html, self._PHONE_RE, self.PHONE_PLACEHOLDER)
 
-        # 5. E-mail addresses (general pattern, not the real_user portion)
-        html = self._EMAIL_RE.sub(self.EMAIL_PLACEHOLDER, html)
+        # 5. E-mail addresses (text content only)
+        html = self._replace_in_text_content(html, self._EMAIL_RE, self.EMAIL_PLACEHOLDER)
 
-        # 6. Crypto wallet addresses
-        html = self._CRYPTO_ETH_RE.sub(self.CRYPTO_PLACEHOLDER, html)
-        html = self._CRYPTO_BTC_RE.sub("1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf", html)
-        html = self._CRYPTO_TRX_RE.sub("T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb", html)
+        # 6. Crypto wallet addresses (text content only)
+        html = self._replace_in_text_content(html, self._CRYPTO_ETH_RE, self.CRYPTO_PLACEHOLDER)
+        html = self._replace_in_text_content(html, self._CRYPTO_BTC_RE, "1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf")
+        html = self._replace_in_text_content(html, self._CRYPTO_TRX_RE, "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb")
 
-        # 7. IBAN
-        html = self._IBAN_RE.sub(self.IBAN_PLACEHOLDER, html)
+        # 7. IBAN (text content only)
+        html = self._replace_in_text_content(html, self._IBAN_RE, self.IBAN_PLACEHOLDER)
 
         return html
 
@@ -274,19 +274,13 @@ class DataSanitizer:
         if not real_user or len(real_user) < 2:
             return html
 
-        # DOM text + attribute plain replace
-        html = html.replace(real_user, self.USER_SPAN)
+        # Text content only — never inside attributes or script/style blocks
+        html = self._replace_in_text_content(html, real_user, self.USER_SPAN)
 
-        # JSON double-quoted
-        html = html.replace(
-            f'"{real_user}"',
-            f'"Misafir"'
-        )
-        # JSON single-quoted / JS
-        html = html.replace(
-            f"'{real_user}'",
-            "'Misafir'"
-        )
+        # JSON double-quoted (safe: only replaces exact quoted strings)
+        html = html.replace(f'"{real_user}"', '"Misafir"')
+        html = html.replace(f"'{real_user}'", "'Misafir'")
+
         # URL-encoded (e.g. Ahmet%20123)
         try:
             from urllib.parse import quote
@@ -296,10 +290,13 @@ class DataSanitizer:
         except Exception:
             pass
 
-        # Upper/lower case variants
-        html = html.replace(real_user.upper(), "MISAFİR")
-        html = html.replace(real_user.lower(), "misafir")
-        html = html.replace(real_user.capitalize(), "Misafir")
+        # Case variants — text content only
+        if real_user.upper() != real_user:
+            html = self._replace_in_text_content(html, real_user.upper(), "MISAFİR")
+        if real_user.lower() != real_user:
+            html = self._replace_in_text_content(html, real_user.lower(), "misafir")
+        if real_user.capitalize() != real_user:
+            html = self._replace_in_text_content(html, real_user.capitalize(), "Misafir")
 
         return html
 
@@ -314,16 +311,51 @@ class DataSanitizer:
         html = html.replace(f'"{json_escaped}"', f'"{self.BALANCE_PLACEHOLDER}"')
         return html
 
+    # Matches <script>...</script> and <style>...</style> blocks (including content)
+    _SCRIPT_STYLE_RE = re.compile(
+        r'(<(?:script|style)\b[^>]*>)(.*?)(</(?:script|style)>)',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def _replace_in_text_content(self, html: str, pattern, replacement: str) -> str:
+        """
+        Apply a replacement ONLY to visible HTML text nodes —
+        never inside tag markup, attribute values, <script>, or <style> blocks.
+        """
+        # Step 1: temporarily hide script/style block contents
+        placeholders: list[str] = []
+
+        def _stash(m: re.Match) -> str:
+            idx = len(placeholders)
+            placeholders.append(m.group(2))  # store inner content
+            return m.group(1) + f'\x00STASH{idx}\x00' + m.group(3)
+
+        html = self._SCRIPT_STYLE_RE.sub(_stash, html)
+
+        # Step 2: split by tags; only process even (text) segments
+        parts = re.split(r'(<[^>]*>)', html)
+        for i in range(0, len(parts), 2):
+            if hasattr(pattern, 'sub'):
+                parts[i] = pattern.sub(replacement, parts[i])
+            else:
+                parts[i] = parts[i].replace(pattern, replacement)
+        html = ''.join(parts)
+
+        # Step 3: restore stashed content unchanged
+        for idx, content in enumerate(placeholders):
+            html = html.replace(f'\x00STASH{idx}\x00', content, 1)
+
+        return html
+
     def _sanitize_auto_balances(self, html: str) -> str:
         """
         Masks automatically detected balances.
-        Only touches values in the _detected_balances list —
-        a more precise approach than raw regex.
+        Only touches text content — never attribute values or URLs.
         """
         for bal in self._detected_balances:
             # Skip very short values (could be an ID or version number)
             digits_only = re.sub(r"[^\d]", "", bal)
             if len(digits_only) <= 2:
                 continue
-            html = html.replace(bal, self.BALANCE_SPAN)
+            html = self._replace_in_text_content(html, bal, self.BALANCE_SPAN)
         return html

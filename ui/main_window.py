@@ -543,6 +543,14 @@ class MainWindow(QMainWindow):
         output_dir = Path.cwd() / "output" / safe_domain
         self._current_output_dir = output_dir
 
+        # Delete previous clone of the same site before starting fresh
+        if output_dir.exists():
+            import shutil
+            try:
+                shutil.rmtree(output_dir, ignore_errors=True)
+            except Exception:
+                pass
+
         # Update UI
         self.url_bar.set_running(True)
         self.progress_panel.reset()

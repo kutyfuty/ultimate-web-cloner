@@ -17,7 +17,6 @@ import os
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, unquote
 
-from bs4 import BeautifulSoup
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.frontend_mocker import FrontendMocker
@@ -962,45 +961,47 @@ class LinkMapper(QObject):
     #  LINK DISCOVERY + PRIORITIZATION
     # ──────────────────────────────────────────────
 
+    # Regex patterns for link/iframe discovery (no HTML parser needed)
+    _A_HREF_RE = re.compile(
+        r'<a\b[^>]*\bhref=["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    )
+    _IFRAME_SRC_RE = re.compile(
+        r'<iframe\b[^>]*\bsrc=["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    )
+    _SPA_PATH_RE = re.compile(r'["\'](/[a-zA-Z0-9_\-\./]+)["\']')
+
     def _discover_internal_links(
         self, html: str, base_url: str, base_domain: str
     ) -> dict[str, str]:
-        soup = BeautifulSoup(html, "lxml")
         links: dict[str, str] = {}
 
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"].strip()
-
-            # (Phase 4) Strip URL fragments (#)
+        def _process_href(href: str) -> None:
+            href = href.strip()
             if "#" in href:
                 href = href.split("#")[0]
-
             if not href or any(href.startswith(p) for p in self.SKIP_PATTERNS):
-                continue
-
+                return
             full_url = urljoin(base_url, href)
             parsed = urlparse(full_url)
-
             if parsed.netloc and parsed.netloc != base_domain:
-                continue
-
+                return
             ext = Path(parsed.path).suffix.lower()
             if ext in self.SKIP_EXTENSIONS:
-                continue
-
+                return
             clean_path = parsed.path.rstrip("/") or "/"
             if len(clean_path) < 2:
-                continue
+                return
+            if clean_path not in links and clean_path not in self._scraped_pages:
+                links[clean_path] = full_url
 
-            if clean_path in links or clean_path in self._scraped_pages:
-                continue
-
-            links[clean_path] = full_url
+        for m in self._A_HREF_RE.finditer(html):
+            _process_href(m.group(1))
 
         # Dynamic/SPA Link Discovery: relative paths inside JavaScript or ng-href etc.
-        import re
-        raw_paths = re.findall(r'["\'](/[a-zA-Z0-9_\-\./]+)["\']', html)
-        for p in raw_paths:
+        for m in self._SPA_PATH_RE.finditer(html):
+            p = m.group(1)
             full_url = urljoin(base_url, p)
             parsed = urlparse(full_url)
             if parsed.netloc and parsed.netloc != base_domain:
@@ -1017,25 +1018,18 @@ class LinkMapper(QObject):
         return links
 
     def _discover_iframes(self, html: str, base_url: str) -> dict[str, str]:
-        """(Phase 9) Find all iframe src values on the page."""
-        soup = BeautifulSoup(html, "lxml")
+        """Find all iframe src values on the page."""
         iframes: dict[str, str] = {}
+        tracking = ["zendesk", "tawk", "google", "facebook", "yandex", "crisp"]
 
-        for iframe in soup.find_all("iframe", src=True):
-            src = iframe["src"].strip()
+        for m in self._IFRAME_SRC_RE.finditer(html):
+            src = m.group(1).strip()
             if not src or "javascript:" in src or "about:" in src:
                 continue
-
             full_url = urljoin(base_url, src)
-
-            # Skip tracking iframes
-            tracking = ["zendesk", "tawk", "google", "facebook", "yandex", "crisp"]
             if any(t in full_url.lower() for t in tracking):
                 continue
-
-            import hashlib
             url_hash = hashlib.md5(full_url.encode()).hexdigest()[:8]
-            # Save as target path
             iframes[f"/iframes/frame_{url_hash}.html"] = full_url
 
         return iframes

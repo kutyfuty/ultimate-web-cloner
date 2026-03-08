@@ -13,7 +13,6 @@ from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
 from functools import lru_cache
 
-from bs4 import BeautifulSoup
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.frontend_mocker import FrontendMocker
@@ -220,77 +219,6 @@ self.addEventListener('fetch', (event) => {
         re.IGNORECASE
     )
 
-    def _seal_static_elements(self, soup: BeautifulSoup) -> int:
-        """
-        Config'ten gelen seçicilerle eşleşen elementleri bulur,
-        üzerlerindeki tüm framework niteliklerini temizler ve
-        zorla görünür hale getirir.
-        
-        Returns: mühürlenen element sayısı
-        """
-        if not self._config:
-            return 0
-
-        selectors_to_seal = []
-        sels = self._config.selectors if hasattr(self._config, 'selectors') else None
-        if not sels:
-            return 0
-
-        # Config'ten gelen seçicileri topla
-        if hasattr(sels, 'login_button') and sels.login_button:
-            selectors_to_seal.append(sels.login_button)
-        if hasattr(sels, 'register_button') and sels.register_button:
-            selectors_to_seal.append(sels.register_button)
-        if hasattr(sels, 'preserve_nav') and sels.preserve_nav:
-            selectors_to_seal.append(sels.preserve_nav)
-
-        if not selectors_to_seal:
-            # Config'te seçici yoksa, yaygın login/register butonlarını otomatik bul
-            selectors_to_seal = [
-                'a[href*="login"]', 'a[href*="register"]', 'a[href*="signup"]',
-                'a[href*="giris"]', 'a[href*="kayit"]', 'a[href*="uye-ol"]',
-                'button[class*="login"]', 'button[class*="register"]',
-                'button[class*="sign"]', '[class*="login-btn"]', '[class*="register-btn"]',
-            ]
-
-        sealed_count = 0
-
-        for selector in selectors_to_seal:
-            try:
-                elements = soup.select(selector)
-            except Exception:
-                continue
-
-            for el in elements:
-                # ── 1. Framework niteliklerini temizle ──
-                attrs_to_remove = []
-                for attr_name in el.attrs:
-                    if self._FRAMEWORK_ATTR_PATTERNS.match(attr_name):
-                        attrs_to_remove.append(attr_name)
-                for attr_name in attrs_to_remove:
-                    del el[attr_name]
-
-                # ── 2. İç elementlerdeki framework niteliklerini de temizle ──
-                for child in el.find_all(True):
-                    child_attrs_to_remove = []
-                    for attr_name in child.attrs:
-                        if self._FRAMEWORK_ATTR_PATTERNS.match(attr_name):
-                            child_attrs_to_remove.append(attr_name)
-                    for attr_name in child_attrs_to_remove:
-                        del child[attr_name]
-
-                # ── 3. Zorla görünür yap ──
-                existing_style = el.get("style", "")
-                force_css = "display: flex !important; visibility: visible !important; opacity: 1 !important;"
-                if existing_style:
-                    el["style"] = existing_style.rstrip(";") + "; " + force_css
-                else:
-                    el["style"] = force_css
-
-                sealed_count += 1
-
-        return sealed_count
-
     def rewrite_html(self, html_content: str, base_url: str, local_filename: str = "", hide_username: str = "", is_auth_page: bool = False) -> str:
         """
         Rewrite all asset URLs in HTML to local paths using regex/string
@@ -307,12 +235,13 @@ self.addEventListener('fetch', (event) => {
             if "/" in normalized_name:
                 depth_prefix = "../" * normalized_name.count("/")
 
-        # ── 1. Personal data sanitization (string-based, safe) ──
-        sanitizer = DataSanitizer()
-        detected = sanitizer.auto_detect(html_content)
-        if any(detected.values()):
-            self.log_message.emit(f"   🔍 Personal data detected: " + ", ".join(f"{k}:{len(v)}" for k, v in detected.items() if v))
-        html_content = sanitizer.sanitize(html_content, real_user=hide_username or "")
+        # ── 1. Personal data sanitization (auth pages only) ──
+        if is_auth_page or hide_username:
+            sanitizer = DataSanitizer()
+            detected = sanitizer.auto_detect(html_content)
+            if any(detected.values()):
+                self.log_message.emit(f"   🔍 Personal data detected: " + ", ".join(f"{k}:{len(v)}" for k, v in detected.items() if v))
+            html_content = sanitizer.sanitize(html_content, real_user=hide_username or "")
 
         # ── 2. URL rewriting ──
         # Pass A: exact absolute URL match (longest first to avoid partial replacements)
