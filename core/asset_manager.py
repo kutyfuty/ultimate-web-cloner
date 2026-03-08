@@ -157,7 +157,7 @@ self.addEventListener('fetch', (event) => {
             sw_path.write_text(sw_content.strip(), encoding="utf-8")
         except Exception as e:
             if hasattr(self, 'log_message'):
-                self.log_message.emit(f"⚠️ PWA dosyaları oluşturulamadı: {e}")
+                self.log_message.emit(f"⚠️ PWA files could not be created: {e}")
 
     def _init_fast_lookup(self):
         """O(1) aramalar için netloc + path sözlüğünü bir kez oluştur."""
@@ -184,7 +184,7 @@ self.addEventListener('fetch', (event) => {
         import asyncio
         content_types = content_types or {}
         total = len(captured_resources)
-        self.log_message.emit(f"💾 {total} kaynak dosyası sıraya alındı...")
+        self.log_message.emit(f"💾 {total} resource files queued...")
 
         semaphore = asyncio.Semaphore(50)
         
@@ -203,7 +203,7 @@ self.addEventListener('fetch', (event) => {
         if tasks:
             await asyncio.gather(*tasks)
 
-        self.log_message.emit(f"✅ Toplam {len(self._url_to_local)} dosya kaydedildi")
+        self.log_message.emit(f"✅ Total {len(self._url_to_local)} files saved")
         self._lookup_initialized = False
         return dict(self._url_to_local)
 
@@ -298,7 +298,7 @@ self.addEventListener('fetch', (event) => {
         This prevents SVG path data, CSS values, and Tailwind class names
         from being corrupted by the HTML parser.
         """
-        self.log_message.emit("🔗 HTML yolları yerel referanslara dönüştürülüyor...")
+        self.log_message.emit("🔗 Rewriting HTML paths to local references...")
         
         # (Phase 9) Alt klasör derinlik hesaplaması (Örn: iframes/xyz.html -> depth=1 -> ../)
         depth_prefix = "./"
@@ -451,7 +451,7 @@ document.addEventListener('click', function(e) {{
             return
 
         css_files = list(css_dir.glob("*.css"))
-        self.log_message.emit(f"🎨 {len(css_files)} CSS dosyasında url() düzeltiliyor ve eksik bağımlılıklar indiriliyor...")
+        self.log_message.emit(f"🎨 {len(css_files)} CSS files: fixing url() and downloading missing dependencies...")
 
         missing_urls = set()
         
@@ -479,7 +479,7 @@ document.addEventListener('click', function(e) {{
                 
         # 1. Aşama: Eksiklikleri İndir
         if missing_urls:
-            self.log_message.emit(f"   📥 CSS içerisinde Playwright'in kaçırdığı {len(missing_urls)} bağımlılık bulundu. Asenkron indiriliyor...")
+            self.log_message.emit(f"   📥 Found {len(missing_urls)} dependencies missed by Playwright in CSS. Downloading async...")
             semaphore = asyncio.Semaphore(30)
             
             async def fetch_and_save(session, m_url):
@@ -520,15 +520,15 @@ document.addEventListener('click', function(e) {{
                 if new_content != content:
                     css_file.write_text(new_content, encoding="utf-8")
             except Exception as e:
-                self.log_message.emit(f"   ⚠️  CSS düzeltme hatası ({css_file.name}): {e}")
+                self.log_message.emit(f"   ⚠️  CSS fix error ({css_file.name}): {e}")
 
-        self.log_message.emit("✅ CSS url() referansları ve eksik varlıkları güncellendi")
+        self.log_message.emit("✅ CSS url() references and missing assets updated")
 
     def save_html(self, html_content: str, filename: str = "index.html") -> Path:
         """İşlenmiş HTML'i dosyaya kaydet."""
         output_path = self.output_dir / filename
         output_path.write_text(html_content, encoding="utf-8")
-        self.log_message.emit(f"📄 HTML kaydedildi: {output_path}")
+        self.log_message.emit(f"📄 HTML saved: {output_path}")
         return output_path
 
     # ──────────────────────────────────────────────
@@ -779,7 +779,7 @@ document.addEventListener('click', function(e) {{
             except Exception:
                 pass
         if inlined:
-            self.log_message.emit(f"   🔤 {inlined} web font base64 olarak inline edildi.")
+            self.log_message.emit(f"   🔤 {inlined} web fonts inlined as base64.")
 
     # ──────────────────────────────────────────────
     #  JS API URL REWRITE
@@ -806,7 +806,7 @@ document.addEventListener('click', function(e) {{
             except Exception:
                 pass
         if rewritten:
-            self.log_message.emit(f"   🔗 {rewritten} JS dosyasında API URL'leri göreceli yola dönüştürüldü.")
+            self.log_message.emit(f"   🔗 {rewritten} JS files: API URLs converted to relative paths.")
 
     # ──────────────────────────────────────────────
     #  ZIP PAKET OLUŞTURMA
@@ -824,10 +824,10 @@ document.addEventListener('click', function(e) {{
                 for file in self.output_dir.rglob("*"):
                     if file.is_file():
                         zf.write(file, file.relative_to(self.output_dir.parent))
-            self.log_message.emit(f"   📦 ZIP oluşturuldu: {zip_path.name}")
+            self.log_message.emit(f"   📦 ZIP created: {zip_path.name}")
             return zip_path
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ ZIP oluşturma hatası: {e}")
+            self.log_message.emit(f"   ⚠️ ZIP creation error: {e}")
             return None
 
     # ──────────────────────────────────────────────
@@ -874,7 +874,7 @@ th,td{{border:1px solid #ccc;padding:8px;text-align:left}} th{{background:#f0f0f
 </body></html>"""
         html_path = self.output_dir / "coverage_report.html"
         html_path.write_text(html, encoding="utf-8")
-        self.log_message.emit(f"   📊 Coverage raporu oluşturuldu: {total} asset ({json_path.name})")
+        self.log_message.emit(f"   📊 Coverage report created: {total} asset ({json_path.name})")
 
     # ──────────────────────────────────────────────
     #  B11 — GÖRÜNTÜ OPTİMİZASYONU (Pillow)
@@ -974,7 +974,7 @@ th,td{{border:1px solid #ccc;padding:8px;text-align:left}} th{{background:#f0f0f
                 pass
 
         if removed_rules:
-            self.log_message.emit(f"   🧹 {removed_rules} kullanılmayan CSS kuralı silindi (Dead CSS Elimination).")
+            self.log_message.emit(f"   🧹 {removed_rules} unused CSS rules removed (Dead CSS Elimination).")
 
     # ──────────────────────────────────────────────
     #  B14 — FONT SUBSETTING (fonttools)
@@ -990,7 +990,7 @@ th,td{{border:1px solid #ccc;padding:8px;text-align:left}} th{{background:#f0f0f
             from fontTools.subset import Subsetter, Options
             from fontTools.ttLib import TTFont
         except ImportError:
-            self.log_message.emit("   ℹ️ fonttools yüklü değil, font subsetting atlandı. (pip install fonttools)")
+            self.log_message.emit("   ℹ️ fonttools not installed, font subsetting skipped. (pip install fonttools)")
             return
 
         html_files = list(self.output_dir.rglob("*.html"))
@@ -1025,7 +1025,7 @@ th,td{{border:1px solid #ccc;padding:8px;text-align:left}} th{{background:#f0f0f
                 pass
 
         if subsetted:
-            self.log_message.emit(f"   ✂️ {subsetted} font dosyası subset edildi (fonttools).")
+            self.log_message.emit(f"   ✂️ {subsetted} font files subsetted (fonttools).")
 
     # ──────────────────────────────────────────────
     #  B15 — INTEGRITY RAPORU (SHA-256)
@@ -1044,7 +1044,7 @@ th,td{{border:1px solid #ccc;padding:8px;text-align:left}} th{{background:#f0f0f
             _json.dumps(self._integrity_map, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
-        self.log_message.emit(f"   🔐 integrity.json oluşturuldu ({len(self._integrity_map)} dosya).")
+        self.log_message.emit(f"   🔐 integrity.json created ({len(self._integrity_map)} files).")
 
     def check_integrity_changes(self) -> list[str]:
         """
@@ -1103,4 +1103,4 @@ th,td{{border:1px solid #ccc;padding:8px;text-align:left}} th{{background:#f0f0f
                 pass
 
         if generated:
-            self.log_message.emit(f"   🎬 {generated} video için thumbnail üretildi (ffmpeg).")
+            self.log_message.emit(f"   🎬 {generated} video thumbnails generated (ffmpeg).")

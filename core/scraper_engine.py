@@ -90,7 +90,7 @@ class ScraperEngine(QObject):
 
             page = await context.new_page()
             
-            self.log_message.emit("👀 Lütfen açılan pencereden GİRİŞ YAPIN ve işiniz bitince tarayıcıyı KAPATIN.")
+            self.log_message.emit("👀 Please log in from the opened window and CLOSE the browser when done.")
             await page.goto(url)
             
             # Kullanıcı pencereyi kapatana kadar bekle (Daha güvenli döngü)
@@ -104,7 +104,7 @@ class ScraperEngine(QObject):
             
             await browser.close()
             await playwright.stop()
-            self.log_message.emit("✅ Oturum başarıyla klonlandı!")
+            self.log_message.emit("✅ Session cloned successfully!")
             
             # Yakalanan kullanıcı adını auto-extract yap
             source_user = ""
@@ -125,7 +125,7 @@ class ScraperEngine(QObject):
             return True, source_user
             
         except Exception as e:
-            self.log_message.emit(f"⚠️ Oturum alma hatası: {e}")
+            self.log_message.emit(f"⚠️ Session capture error: {e}")
             return False, ""
 
     async def capture_auth_state_auto(
@@ -155,7 +155,7 @@ class ScraperEngine(QObject):
             await stealth.apply_stealth_async(context)
 
             page = await context.new_page()
-            self.log_message.emit(f"🔐 Otomatik giriş başlatılıyor: {login_url}")
+            self.log_message.emit(f"🔐 Starting auto-login: {login_url}")
 
             await page.goto(login_url, wait_until="domcontentloaded", timeout=30000)
             try:
@@ -167,7 +167,7 @@ class ScraperEngine(QObject):
             await self._wait_for_real_content(page)
 
             # ── Form alanlarını bul ve doldur ──
-            self.log_message.emit("📝 Giriş formu alanları dolduruluyor...")
+            self.log_message.emit("📝 Filling login form fields...")
 
             # Kullanıcı adı alanı: email, text veya user tipi input
             user_filled = False
@@ -189,13 +189,13 @@ class ScraperEngine(QObject):
                         await el.click()
                         await el.fill(username)
                         user_filled = True
-                        self.log_message.emit(f"   ✅ Kullanıcı adı girildi: {sel}")
+                        self.log_message.emit(f"   ✅ Username entered: {sel}")
                         break
                 except Exception:
                     continue
 
             if not user_filled:
-                self.log_message.emit("⚠️ Kullanıcı adı alanı bulunamadı — manuel girişe düşülüyor")
+                self.log_message.emit("⚠️ Username field not found — falling back to manual login")
                 await browser.close()
                 await playwright.stop()
                 return await self.capture_auth_state_ui(login_url, output_dir)
@@ -208,12 +208,12 @@ class ScraperEngine(QObject):
                     await pw_el.click()
                     await pw_el.fill(password)
                     password_filled = True
-                    self.log_message.emit("   ✅ Şifre girildi")
+                    self.log_message.emit("   ✅ Password entered")
             except Exception:
                 pass
 
             if not password_filled:
-                self.log_message.emit("⚠️ Şifre alanı bulunamadı — manuel girişe düşülüyor")
+                self.log_message.emit("⚠️ Password field not found — falling back to manual login")
                 await browser.close()
                 await playwright.stop()
                 return await self.capture_auth_state_ui(login_url, output_dir)
@@ -221,7 +221,7 @@ class ScraperEngine(QObject):
             await asyncio.sleep(0.5)
 
             # ── Giriş Yap butonuna bas ──
-            self.log_message.emit("🖱️ Giriş butonu tıklanıyor...")
+            self.log_message.emit("🖱️ Clicking login button...")
             submit_clicked = False
             submit_selectors = [
                 'button[type="submit"]',
@@ -237,7 +237,7 @@ class ScraperEngine(QObject):
                     if el and await el.is_visible():
                         await el.click()
                         submit_clicked = True
-                        self.log_message.emit(f"   ✅ Giriş butonu tıklandı: {sel}")
+                        self.log_message.emit(f"   ✅ Login button clicked: {sel}")
                         break
                 except Exception:
                     continue
@@ -247,12 +247,12 @@ class ScraperEngine(QObject):
                 try:
                     await page.keyboard.press("Enter")
                     submit_clicked = True
-                    self.log_message.emit("   ✅ Enter tuşu ile form gönderildi")
+                    self.log_message.emit("   ✅ Form submitted via Enter key")
                 except Exception:
                     pass
 
             # ── Başarılı giriş doğrulaması ──
-            self.log_message.emit("⏳ Giriş doğrulanıyor...")
+            self.log_message.emit("⏳ Verifying login...")
             await asyncio.sleep(2)
 
             try:
@@ -265,39 +265,39 @@ class ScraperEngine(QObject):
                 try:
                     await page.wait_for_selector(success_selector, state="visible", timeout=15000)
                     login_success = True
-                    self.log_message.emit(f"   ✅ Başarı göstergesi bulundu: {success_selector}")
+                    self.log_message.emit(f"   ✅ Success indicator found: {success_selector}")
                 except Exception:
-                    self.log_message.emit(f"   ⚠️ Başarı göstergesi bulunamadı: {success_selector}")
+                    self.log_message.emit(f"   ⚠️ Success indicator not found: {success_selector}")
             else:
                 # success_selector yoksa, URL değişimi veya password alanının kaybolmasıyla doğrula
                 try:
                     pw_still = await page.query_selector('input[type="password"]')
                     if pw_still and await pw_still.is_visible():
-                        self.log_message.emit("   ⚠️ Şifre alanı hâlâ görünür — giriş başarısız olabilir")
+                        self.log_message.emit("   ⚠️ Password field still visible — login may have failed")
                     else:
                         login_success = True
-                        self.log_message.emit("   ✅ Şifre alanı kayboldu — giriş başarılı!")
+                        self.log_message.emit("   ✅ Password field disappeared — login successful!")
                 except Exception:
                     login_success = True  # Sayfa tamamen değiştiyse başarılı kabul et
 
             # ── Auth state kaydet ──
             auth_path = output_dir / "auth_state.json"
-            self.log_message.emit("💾 Oturum verisi kaydediliyor...")
+            self.log_message.emit("💾 Saving session data...")
             await context.storage_state(path=str(auth_path))
 
             await browser.close()
             await playwright.stop()
 
             if login_success:
-                self.log_message.emit("✅ Otomatik giriş başarılı! Oturum klonlandı.")
+                self.log_message.emit("✅ Auto-login successful! Session cloned.")
             else:
-                self.log_message.emit("⚠️ Giriş belirsiz — oturum yine de kaydedildi.")
+                self.log_message.emit("⚠️ Login ambiguous — session saved anyway.")
 
             return True, username
 
         except Exception as e:
-            self.log_message.emit(f"⚠️ Otomatik giriş hatası: {e}")
-            self.log_message.emit("🔄 Manuel girişe geçiliyor...")
+            self.log_message.emit(f"⚠️ Auto-login error: {e}")
+            self.log_message.emit("🔄 Switching to manual login...")
             return await self.capture_auth_state_ui(login_url, output_dir)
 
     async def scrape_page(self, url: str, output_dir: str | Path, use_auth: bool = False, dual_pass: bool = False) -> None:
@@ -314,8 +314,8 @@ class ScraperEngine(QObject):
         self.api_mocker.log_message.connect(self.log_message.emit)
 
         try:
-            self.log_message.emit(f"🔍 Kazıma işlemi başlatılıyor: {url}")
-            self.log_message.emit("🚀 Tarayıcı başlatılıyor (stealth modu)...")
+            self.log_message.emit(f"🔍 Starting scrape: {url}")
+            self.log_message.emit("🚀 Launching browser (stealth mode)...")
             self.progress_updated.emit(5)
 
             self._playwright = await async_playwright().start()
@@ -457,11 +457,11 @@ class ScraperEngine(QObject):
                     await route.continue_()
             await page_out.route("**/*.js", _sw_route_handler)
 
-            self.log_message.emit("📡 Ağ dinleyicisi kuruluyor...")
+            self.log_message.emit("📡 Setting up network listener...")
             self.progress_updated.emit(10)
             await self._setup_network_listener(page_out, url)
 
-            self.log_message.emit(f"🌐 Temel Masaüstü Görünümü açılıyor: {url}")
+            self.log_message.emit(f"🌐 Opening desktop view: {url}")
             self.progress_updated.emit(15)
             
             # (Phase 7) Raw HTML Kaydı - İsteği yakala
@@ -469,36 +469,36 @@ class ScraperEngine(QObject):
             if resp:
                 try:
                     self._raw_html = await resp.text()
-                    self.log_message.emit(f"📝 Orijinal (Raw) HTML yanıtı alındı: {len(self._raw_html):,} bayt")
+                    self.log_message.emit(f"📝 Raw HTML response received: {len(self._raw_html):,} bytes")
                 except Exception as e:
-                    self.log_message.emit(f"⚠️ Raw HTML okunamadı (Protokol Hatası): {e}")
+                    self.log_message.emit(f"⚠️ Raw HTML unreadable (Protocol Error): {e}")
                     self._raw_html = ""
 
-            self.log_message.emit("⏳ Sayfa yüklenmesi bekleniyor...")
+            self.log_message.emit("⏳ Waiting for page load...")
             self.progress_updated.emit(20)
             try:
                 await page_out.wait_for_load_state("networkidle", timeout=self.NETWORK_IDLE_TIMEOUT)
             except Exception:
-                self.log_message.emit("⚠️  networkidle zaman aşımı — devam ediliyor")
+                self.log_message.emit("⚠️  networkidle timeout — continuing")
 
             # ── Preloader/Intro Atlatma ──
             await self._wait_for_real_content(page_out)
 
             # Anti-Bot Emulation: Rastgele fare hareketleri ve bekleme
-            self.log_message.emit("🤖 Anti-Bot aşılıyor: Fare hareketleri simüle ediliyor...")
+            self.log_message.emit("🤖 Bypassing anti-bot: simulating mouse movements...")
             import random
             for _ in range(5):
                 await page_out.mouse.move(random.randint(100, 800), random.randint(100, 600))
                 await asyncio.sleep(0.2)
             await asyncio.sleep(2)
 
-            self.log_message.emit("📜 Lazy loading aşımı başlıyor — sayfa kaydırılıyor...")
+            self.log_message.emit("📜 Triggering lazy load — scrolling page...")
             self.progress_updated.emit(25)
             await self._scroll_to_bottom(page_out)
             self.progress_updated.emit(50)
 
             # --- Phase 7: Interaction Engine ---
-            self.log_message.emit("⚡ Mikro-Klonlama Motoru: Etkileşimli öğeler tetikleniyor...")
+            self.log_message.emit("⚡ Micro-Clone Engine: triggering interactive elements...")
             interaction = InteractionEngine(page_out, log_callback=self.log_message.emit)
             await interaction.run_all()
             
@@ -510,7 +510,7 @@ class ScraperEngine(QObject):
             self.progress_updated.emit(70)
 
             # --- Cookie ve Popup Oto-Kabul ---
-            self.log_message.emit("🍪 Cookie/Consent popupları temizleniyor...")
+            self.log_message.emit("🍪 Clearing cookie/consent popups...")
             cookie_js = """() => {
                 const keywords = ['kabul', 'accept', 'agree', 'anladım', 'got it', 'tamam', 'ok'];
                 document.querySelectorAll('button, a, div[role="button"]').forEach(btn => {
@@ -534,11 +534,11 @@ class ScraperEngine(QObject):
             except Exception:
                 pass
 
-            self.log_message.emit("🔄 data-src / placeholder dönüşümleri uygulanıyor...")
+            self.log_message.emit("🔄 Applying data-src / placeholder conversions...")
             self.progress_updated.emit(75)
             await self._convert_lazy_attributes(page_out)
 
-            self.log_message.emit("🎨 CSS kuralları sayfaya gömülüyor...")
+            self.log_message.emit("🎨 Embedding CSS rules into page...")
             self.progress_updated.emit(82)
             await self._inline_all_css(page_out)
 
@@ -557,15 +557,15 @@ class ScraperEngine(QObject):
 
             screenshot_path = output_dir / "original_screenshot.png"
             await page_out.screenshot(path=str(screenshot_path), full_page=True)
-            self.log_message.emit(f"📸 Ekran görüntüsü alındı: {screenshot_path.name}")
+            self.log_message.emit(f"📸 Screenshot captured: {screenshot_path.name}")
             self.progress_updated.emit(85)
 
             html_content_desktop = await page_out.content()
-            self.log_message.emit(f"✅ Masaüstü DOM alındı — {len(html_content_desktop):,} karakter")
+            self.log_message.emit(f"✅ Desktop DOM captured — {len(html_content_desktop):,} characters")
             self.progress_updated.emit(90)
 
             # --- Phase 6: Automatic Selector Detection (Logged-Out) ---
-            self.log_message.emit("🔍 Giriş formu ve kullanıcı kutusu otomatik saptanıyor...")
+            self.log_message.emit("🔍 Auto-detecting login form and username display...")
             selectors = await self._detect_mock_selectors(page_out)
             self.last_detected_selectors.update(selectors)
             
@@ -591,7 +591,7 @@ class ScraperEngine(QObject):
                 except: pass
 
             if use_auth and auth_path.exists():
-                self.log_message.emit("🔑 (Phase 18) Çerezli Masaüstü görünümü çıkarılıyor (Header Diffing İçin)...")
+                self.log_message.emit("🔑 (Phase 18) Extracting authenticated desktop view (for header diffing)...")
                 context_args_in = context_args_desktop.copy()
                 context_args_in["storage_state"] = str(auth_path)
                 
@@ -617,19 +617,19 @@ class ScraperEngine(QObject):
                 
                 # --- Phase 6: Automatic Selector Detection (Logged-In) ---
                 if current_source_user:
-                    self.log_message.emit(f"🔍 Kullanıcı adı alanı '{current_source_user}' değeriyle taranıyor...")
+                    self.log_message.emit(f"🔍 Scanning username field with value '{current_source_user}'...")
                     display_sel = await self._detect_username_display(page_in, current_source_user)
                     if display_sel:
                         self.last_detected_selectors["username_display"] = display_sel
-                        self.log_message.emit(f"✨ Tespit Edildi: {display_sel}")
+                        self.log_message.emit(f"✨ Detected: {display_sel}")
 
-                self.log_message.emit(f"✅ Çerezli Masaüstü DOM Alındı — {len(html_content_desktop_logged_in):,} karakter")
+                self.log_message.emit(f"✅ Authenticated desktop DOM captured — {len(html_content_desktop_logged_in):,} characters")
                 await context_in.close()
             
             # ── 2. Mobil Geçiş (Dual Pass) ──
             html_content_mobile = ""
             if dual_pass and self._is_running:
-                self.log_message.emit("📱 İkinci Geçiş: Mobil Görünüm (iPhone) taranıyor...")
+                self.log_message.emit("📱 Second pass: scanning mobile view (iPhone)...")
                 context_args_mobile = {
                     "viewport": {"width": 430, "height": 932}, # iPhone 14 Pro Max
                     "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
@@ -664,7 +664,7 @@ class ScraperEngine(QObject):
                 await self._capture_prefetch_resources(page_m, url)
 
                 html_content_mobile = await page_m.content()
-                self.log_message.emit(f"✅ Mobil DOM alındı — {len(html_content_mobile):,} karakter")
+                self.log_message.emit(f"✅ Mobile DOM captured — {len(html_content_mobile):,} characters")
                 await context_m.close()
 
             # ── Cleanup ──
@@ -676,15 +676,15 @@ class ScraperEngine(QObject):
                 state_path = output_dir / state_file
                 if state_path.exists():
                     state_path.unlink()
-                    self.log_message.emit(f"🔐 {state_file} silindi (Zero-Leak)")
+                    self.log_message.emit(f"🔐 {state_file} deleted (Zero-Leak)")
                 # Proje kökünden de sil
                 root_state = Path(state_file)
                 if root_state.exists():
                     root_state.unlink()
-                    self.log_message.emit(f"🔐 Kök/{state_file} silindi (Zero-Leak)")
+                    self.log_message.emit(f"🔐 Root/{state_file} deleted (Zero-Leak)")
 
             self.log_message.emit(
-                f"📦 Toplam yakalanan kaynak: {len(self._captured_resources)} dosya"
+                f"📦 Total captured resources: {len(self._captured_resources)} files"
             )
             self.progress_updated.emit(95)
 
@@ -708,10 +708,10 @@ class ScraperEngine(QObject):
             # content_types_snapshot'ı property üzerinden erişilebilir kıl
             self._captured_content_types_snapshot = content_types_snapshot
             self.progress_updated.emit(100)
-            self.log_message.emit("🎉 Kazıma tamamlandı!")
+            self.log_message.emit("🎉 Scraping complete!")
 
         except Exception as exc:
-            self.log_message.emit(f"❌ Hata: {exc}")
+            self.log_message.emit(f"❌ Error: {exc}")
             self.scraping_failed.emit(str(exc))
             await self._cleanup()
         finally:
@@ -794,7 +794,7 @@ class ScraperEngine(QObject):
         """Kazıma işlemini durdur."""
         self._is_running = False
         await self._cleanup()
-        self.log_message.emit("🛑 Kazıma durduruldu.")
+        self.log_message.emit("🛑 Scraping stopped.")
 
     # ──────────────────────────────────────────────
     #  LAZY LOADING SCROLL
@@ -837,14 +837,14 @@ class ScraperEngine(QObject):
             # Her 10 adımda log
             if attempt % 10 == 0:
                 self.log_message.emit(
-                    f"   📜 Kaydırma: {attempt}. adım — "
-                    f"pozisyon: {int(scroll_position)}px / {current_height}px"
+                    f"   📜 Scrolling: step {attempt} — "
+                    f"position: {int(scroll_position)}px / {current_height}px"
                 )
 
             # En alta ulaştık mı?
             if scroll_position >= current_height - 5 and current_height == previous_height:
                 # Biraz daha bekle (son lazy load'lar için)
-                self.log_message.emit("   📜 Sayfa sonuna ulaşıldı — ek bekleme...")
+                self.log_message.emit("   📜 Reached end of page — waiting extra...")
                 await asyncio.sleep(1.5)
 
                 # Tekrar kontrol et (infinite scroll tetiklenmiş olabilir)
@@ -852,21 +852,21 @@ class ScraperEngine(QObject):
                 if new_height == current_height:
                     break  # Gerçekten bitti
                 else:
-                    self.log_message.emit("   📜 Yeni içerik yüklendi — kaydırma devam ediyor...")
+                    self.log_message.emit("   📜 New content loaded — continuing scroll...")
 
             previous_height = current_height
 
         # Son scroll durumu logu — ayrı IPC yerine döngüdeki son değeri kullan
         self.log_message.emit(
-            f"   ✅ Kaydırma tamamlandı: {attempt} adım, "
-            f"toplam yükseklik: {current_height}px"
+            f"   ✅ Scrolling complete: {attempt} steps, "
+            f"total height: {current_height}px"
         )
 
         # Scroll sonrası networkidle bekle
         try:
             await page.wait_for_load_state("networkidle", timeout=self.NETWORK_IDLE_TIMEOUT)
         except Exception:
-            self.log_message.emit("   ⚠️  Scroll sonrası networkidle zaman aşımı")
+            self.log_message.emit("   ⚠️  networkidle timeout after scroll")
 
     # ──────────────────────────────────────────────
     #  CSS INLINE (SingleFile-like)
@@ -914,9 +914,9 @@ class ScraperEngine(QObject):
         """
         try:
             rule_count = await page.evaluate(inline_script)
-            self.log_message.emit(f"   🎨 {rule_count} CSS kuralı inline olarak gömüldü")
+            self.log_message.emit(f"   🎨 {rule_count} CSS rules inlined")
         except Exception as e:
-            self.log_message.emit(f"   ⚠️  CSS inline hatası: {e}")
+            self.log_message.emit(f"   ⚠️  CSS inline error: {e}")
 
     async def _capture_background_images(self, page) -> None:
         """
@@ -947,7 +947,7 @@ class ScraperEngine(QObject):
         try:
             bg_urls = await page.evaluate(bg_script)
             if bg_urls:
-                self.log_message.emit(f"   🖼️  {len(bg_urls)} arka plan görseli tespit edildi")
+                self.log_message.emit(f"   🖼️  {len(bg_urls)} background images detected")
                 import asyncio
                 
                 async def fetch_bg(url):
@@ -972,7 +972,7 @@ class ScraperEngine(QObject):
                         self._captured_resources[u] = req_body
                         self._captured_content_types[u] = ct
         except Exception as e:
-            self.log_message.emit(f"   ⚠️  Background image capture hatası: {e}")
+            self.log_message.emit(f"   ⚠️  Background image capture error: {e}")
 
     async def _freeze_canvases(self, page) -> None:
         """
@@ -985,7 +985,7 @@ class ScraperEngine(QObject):
             if not canvases:
                 return
                 
-            self.log_message.emit(f"   🧊 {len(canvases)} Canvas elementi tespit edildi, donduruluyor...")
+            self.log_message.emit(f"   🧊 {len(canvases)} Canvas elements detected, freezing...")
             frozen_count = 0
             
             for canvas in canvases:
@@ -1021,9 +1021,9 @@ class ScraperEngine(QObject):
                 frozen_count += 1
                 
             if frozen_count > 0:
-                self.log_message.emit(f"   ❄️ {frozen_count} Canvas başarıyla donduruldu.")
+                self.log_message.emit(f"   ❄️ {frozen_count} Canvas(es) frozen successfully.")
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ Canvas dondurma hatası: {e}")
+            self.log_message.emit(f"   ⚠️ Canvas freeze error: {e}")
 
     async def _capture_favicons(self, page) -> None:
         """Sayfanın faviconlarını (icon, shortcut icon, apple-touch-icon vb.) bul ve indir."""
@@ -1045,7 +1045,7 @@ class ScraperEngine(QObject):
         try:
             fav_urls = await page.evaluate(favicon_script)
             if fav_urls:
-                self.log_message.emit(f"   🔖  {len(fav_urls)} Favicon URL'si tespit edildi, indiriliyor...")
+                self.log_message.emit(f"   🔖  {len(fav_urls)} Favicon URL(s) detected, downloading...")
                 for url in fav_urls:
                     if url not in self._captured_resources:
                         try:
@@ -1066,7 +1066,7 @@ class ScraperEngine(QObject):
                         except Exception:
                             pass
         except Exception as e:
-            self.log_message.emit(f"   ⚠️  Favicon indirme hatası: {e}")
+            self.log_message.emit(f"   ⚠️  Favicon download error: {e}")
 
     # ──────────────────────────────────────────────
     #  SVG SPRITE INLINE
@@ -1101,9 +1101,9 @@ class ScraperEngine(QObject):
             }
             """)
             if result:
-                self.log_message.emit(f"   🎨 {result} SVG sprite inline edildi.")
+                self.log_message.emit(f"   🎨 {result} SVG sprite(s) inlined.")
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ SVG sprite inline hatası: {e}")
+            self.log_message.emit(f"   ⚠️ SVG sprite inline error: {e}")
 
     # ──────────────────────────────────────────────
     #  PREFETCH / PRELOAD YAKALAMA
@@ -1124,7 +1124,7 @@ class ScraperEngine(QObject):
             """)
             if not urls:
                 return
-            self.log_message.emit(f"   🔗 {len(urls)} prefetch/preload kaynağı tespit edildi...")
+            self.log_message.emit(f"   🔗 {len(urls)} prefetch/preload resource(s) detected...")
             from urllib.parse import urljoin
             for href in urls:
                 abs_url = urljoin(base_url, href)
@@ -1145,7 +1145,7 @@ class ScraperEngine(QObject):
                     except Exception:
                         pass
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ Prefetch yakalama hatası: {e}")
+            self.log_message.emit(f"   ⚠️ Prefetch capture error: {e}")
 
     # ──────────────────────────────────────────────
     #  A1 — SHADOW DOM EXTRACTION
@@ -1178,9 +1178,9 @@ class ScraperEngine(QObject):
             }
             """)
             if flattened:
-                self.log_message.emit(f"   🌑 {flattened} Shadow DOM bileşeni flatten edildi.")
+                self.log_message.emit(f"   🌑 {flattened} Shadow DOM component(s) flattened.")
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ Shadow DOM extraction hatası: {e}")
+            self.log_message.emit(f"   ⚠️ Shadow DOM extraction error: {e}")
 
     # ──────────────────────────────────────────────
     #  A3 — IFRAME EXTRACTION
@@ -1195,7 +1195,7 @@ class ScraperEngine(QObject):
             frames = page.frames
             if len(frames) <= 1:
                 return
-            self.log_message.emit(f"   🖼️ {len(frames) - 1} iframe tespit edildi, içerikler yakalanıyor...")
+            self.log_message.emit(f"   🖼️ {len(frames) - 1} iframe(s) detected, capturing contents...")
             for frame in frames[1:]:  # ilk frame ana sayfa
                 try:
                     frame_url = frame.url
@@ -1221,7 +1221,7 @@ class ScraperEngine(QObject):
                 except Exception:
                     pass
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ iframe extraction hatası: {e}")
+            self.log_message.emit(f"   ⚠️ iframe extraction error: {e}")
 
     # ──────────────────────────────────────────────
     #  A4 — DARK MODE CSS YAKALAMA
@@ -1260,11 +1260,11 @@ class ScraperEngine(QObject):
                 new_dark = {u: b for u, b in dark_resources.items() if u not in self._captured_resources}
                 self._captured_resources.update(new_dark)
                 if new_dark:
-                    self.log_message.emit(f"   🌙 {len(new_dark)} dark mode CSS/JS ek kaynak yakalandı.")
+                    self.log_message.emit(f"   🌙 {len(new_dark)} additional dark mode CSS/JS resource(s) captured.")
             finally:
                 await context_dm.close()
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ Dark mode CSS yakalama hatası: {e}")
+            self.log_message.emit(f"   ⚠️ Dark mode CSS capture error: {e}")
 
     # ──────────────────────────────────────────────
     #  A5 — POPUP / DROPDOWN STATE YAKALAMA
@@ -1311,9 +1311,9 @@ class ScraperEngine(QObject):
             """)
             await asyncio.sleep(0.5)  # animasyon tamamlanması için bekle
             if triggered:
-                self.log_message.emit(f"   🖱️ {triggered} interaktif element tetiklendi (dropdown/menu).")
+                self.log_message.emit(f"   🖱️ {triggered} interactive element(s) triggered (dropdown/menu).")
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ İnteraktif state yakalama hatası: {e}")
+            self.log_message.emit(f"   ⚠️ Interactive state capture error: {e}")
 
     # ──────────────────────────────────────────────
     #  A8 — CAPTCHA DEDEKTÖRÜ
@@ -1340,7 +1340,7 @@ class ScraperEngine(QObject):
             }
             """)
             if found:
-                self.log_message.emit("⚠️ CAPTCHA/Bot-Koruması tespit edildi! Sayfa tam klonlanamayabilir.")
+                self.log_message.emit("⚠️ CAPTCHA/Bot-Protection detected! Page may not be fully cloneable.")
             return found
         except Exception:
             return False
@@ -1376,9 +1376,9 @@ class ScraperEngine(QObject):
                 finally:
                     await ctx.close()
             if variants_found:
-                self.log_message.emit(f"   🧪 {variants_found} A/B test varyantı kaydedildi (ab_variant_N.html).")
+                self.log_message.emit(f"   🧪 {variants_found} A/B test variant(s) saved (ab_variant_N.html).")
         except Exception as e:
-            self.log_message.emit(f"   ⚠️ A/B variant yakalama hatası: {e}")
+            self.log_message.emit(f"   ⚠️ A/B variant capture error: {e}")
 
     # ──────────────────────────────────────────────
     #  B17 — RSS / ATOM / SITEMAP YAKALAMA
@@ -1426,7 +1426,7 @@ class ScraperEngine(QObject):
                 pass
 
         if fetched:
-            self.log_message.emit(f"   📰 {fetched} feed/sitemap/robots dosyası yakalandı.")
+            self.log_message.emit(f"   📰 {fetched} feed/sitemap/robots file(s) captured.")
 
     # ──────────────────────────────────────────────
     #  DATA-SRC DÖNÜŞÜMÜ
@@ -1505,7 +1505,7 @@ class ScraperEngine(QObject):
         """
         converted_count = await page.evaluate(convert_script)
         self.log_message.emit(
-            f"   🔄 {converted_count} lazy-load attribute dönüştürüldü"
+            f"   🔄 {converted_count} lazy-load attribute(s) converted"
         )
 
     # ──────────────────────────────────────────────
@@ -1527,7 +1527,7 @@ class ScraperEngine(QObject):
         async def route_handler(route):
             url = route.request.url
             if any(t in url.lower() for t in TRACKER_DOMAINS):
-                self.log_message.emit(f"   🛡️ Tracking İsteği Engellendi: {Path(urlparse(url).path).name}")
+                self.log_message.emit(f"   🛡️ Tracking Request Blocked: {Path(urlparse(url).path).name}")
                 await route.abort()
             else:
                 await route.continue_()
@@ -1575,7 +1575,7 @@ class ScraperEngine(QObject):
                     body = await response.body()
                 except Exception as e:
                     # 'No resource with given identifier' hatasını burada yutuyoruz
-                    self.log_message.emit(f"🛡️ Tracking İsteği İçeriği Atlandı ({Path(urlparse(url).path).suffix}): {e}")
+                    self.log_message.emit(f"🛡️ Tracking Request Content Skipped ({Path(urlparse(url).path).suffix}): {e}")
                     return
 
                 if body and len(body) > 0:
@@ -1591,7 +1591,7 @@ class ScraperEngine(QObject):
                             self.api_mocker.save_api_response(url, body)
                             
                     if ext in (".m3u8", ".ts") or "mpegurl" in content_type.lower() or "mp2t" in content_type.lower():
-                        self.log_message.emit(f"🎬 Canlı Yayın (HLS) Parçası Yakalandı: {Path(parsed.path).name}")
+                        self.log_message.emit(f"🎬 Live Stream (HLS) Segment Captured: {Path(parsed.path).name}")
                         if not content_type:
                             content_type = "application/vnd.apple.mpegurl" if ext == ".m3u8" else "video/mp2t"
 
@@ -1655,7 +1655,7 @@ class ScraperEngine(QObject):
         2. Yaygın loader/spinner overlay'lerinin kaybolmasını bekler.
         3. Kaybolmazlarsa JS ile zorla kaldırır.
         """
-        self.log_message.emit("🔄 Preloader/Intro atlatılıyor...")
+        self.log_message.emit("🔄 Bypassing Preloader/Intro...")
 
         # 1. body görünür olsun
         try:
@@ -1679,13 +1679,13 @@ class ScraperEngine(QObject):
             try:
                 el = await page.query_selector(selector)
                 if el and await el.is_visible():
-                    self.log_message.emit(f"   ⏳ Preloader bulundu: {selector} — kaybolması bekleniyor...")
+                    self.log_message.emit(f"   ⏳ Preloader found: {selector} — waiting for it to disappear...")
                     try:
                         await page.wait_for_selector(selector, state="hidden", timeout=15000)
-                        self.log_message.emit(f"   ✅ Preloader kayboldu: {selector}")
+                        self.log_message.emit(f"   ✅ Preloader disappeared: {selector}")
                     except Exception:
                         # Kaybolmadıysa zorla kaldır
-                        self.log_message.emit(f"   🔨 Preloader zorla kaldırılıyor: {selector}")
+                        self.log_message.emit(f"   🔨 Forcing preloader removal: {selector}")
                         try:
                             await page.evaluate(f"""
                                 document.querySelectorAll('{selector}').forEach(el => {{
@@ -1722,7 +1722,7 @@ class ScraperEngine(QObject):
         except Exception:
             pass
 
-        self.log_message.emit("✅ Preloader atlatma tamamlandı")
+        self.log_message.emit("✅ Preloader bypass complete")
 
     # ──────────────────────────────────────────────
     #  YARDIMCI METODLAR
