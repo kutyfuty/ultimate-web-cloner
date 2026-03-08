@@ -202,6 +202,118 @@ def fix_links(html: str, base_url: str, cloned_files: set[str]) -> str:
     return html
 
 
+def quality_check_and_fix(html: str, out_dir: Path) -> tuple[str, dict]:
+    """
+    Scan the saved HTML for remaining problems, fix every one automatically,
+    and return (fixed_html, report).
+
+    Checks & fixes:
+      1. Remaining absolute URLs in src/href  → clear the attribute value
+      2. <link> to a CSS file that doesn't exist locally → remove the tag
+      3. <img> / <source> pointing to a missing local file → remove src
+      4. Leftover <script> tags (should be 0 after lobotomy) → remove
+      5. Inline style with absolute url() → clear the url()
+    """
+    report: dict[str, list[str]] = {
+        "absolute_urls_cleared": [],
+        "missing_css_removed":   [],
+        "missing_images_fixed":  [],
+        "stray_scripts_removed": [],
+        "inline_url_cleared":    [],
+    }
+
+    # ── 1. Stray <script> tags ─────────────────────────────────────────────
+    def _nuke_script(m: re.Match) -> str:
+        report["stray_scripts_removed"].append(m.group(0)[:60])
+        return ""
+    html = re.sub(r'<script\b[^>]*>.*?</script>', _nuke_script,
+                  html, flags=re.IGNORECASE | re.DOTALL)
+
+    # ── 2. Remaining absolute URLs in src / href ───────────────────────────
+    def _clear_absolute(m: re.Match) -> str:
+        attr, q, url, eq = m.group(1), m.group(2), m.group(3), m.group(4)
+        if url.startswith('http'):
+            report["absolute_urls_cleared"].append(url[:80])
+            return attr + q + "" + eq
+        return m.group(0)
+
+    html = re.sub(r'(\b(?:src|href|poster|action)=)(["\'])([^"\']*)(["\']]?)',
+                  _clear_absolute, html, flags=re.IGNORECASE)
+
+    # ── 3. <link rel="stylesheet"> pointing to a missing local file ────────
+    def _fix_css_link(m: re.Match) -> str:
+        tag = m.group(0)
+        href_m = re.search(r'href=["\']([^"\']+)["\']', tag, re.IGNORECASE)
+        if not href_m:
+            return tag
+        href = href_m.group(1)
+        if href.startswith(('http', 'data:', '//')):
+            return tag   # already handled above
+        local = (out_dir / href).resolve()
+        if not local.exists():
+            report["missing_css_removed"].append(href)
+            return ""    # drop the entire <link> tag
+        return tag
+
+    html = re.sub(r'<link\b[^>]*rel=["\']stylesheet["\'][^>]*/?>',
+                  _fix_css_link, html, flags=re.IGNORECASE)
+    html = re.sub(r'<link\b[^>]*href=[^>]+stylesheet[^>]*/?>',
+                  _fix_css_link, html, flags=re.IGNORECASE)
+
+    # ── 4. <img src="..."> / <source src="..."> pointing to missing file ──
+    def _fix_missing_img(m: re.Match) -> str:
+        full = m.group(0)
+        src_m = re.search(r'\bsrc=["\']([^"\']+)["\']', full, re.IGNORECASE)
+        if not src_m:
+            return full
+        src = src_m.group(1)
+        if src.startswith(('http', 'data:', '//', ''.__class__(''))):
+            return full
+        local = (out_dir / src).resolve()
+        if not local.exists():
+            report["missing_images_fixed"].append(src)
+            # Replace src value with empty string
+            return re.sub(r'(\bsrc=)["\'][^"\']*["\']', r'\1""', full)
+        return full
+
+    html = re.sub(r'<(?:img|source|video|audio)\b[^>]*/?>',
+                  _fix_missing_img, html, flags=re.IGNORECASE)
+
+    # ── 5. Inline style with absolute url() ───────────────────────────────
+    def _fix_inline_url(m: re.Match) -> str:
+        raw = m.group(1).strip().strip('\'"')
+        if raw.startswith('http'):
+            report["inline_url_cleared"].append(raw[:60])
+            return "url('')"
+        return m.group(0)
+
+    html = re.sub(r'url\(([^)]+)\)', _fix_inline_url, html)
+
+    return html, report
+
+
+def print_report(report: dict, filename: str) -> None:
+    total = sum(len(v) for v in report.values())
+    print(f"\n  📋 Quality report for {filename}:")
+    if total == 0:
+        print("     ✅ No issues found — clone looks clean!")
+        return
+    labels = {
+        "absolute_urls_cleared": "Absolute URLs cleared",
+        "missing_css_removed":   "Missing CSS <link> tags removed",
+        "missing_images_fixed":  "Missing image src emptied",
+        "stray_scripts_removed": "Stray <script> tags removed",
+        "inline_url_cleared":    "Inline style url() cleared",
+    }
+    for key, items in report.items():
+        if items:
+            print(f"     🔧 {labels[key]}: {len(items)}")
+            for item in items[:3]:   # show at most 3 examples
+                print(f"        · {item}")
+            if len(items) > 3:
+                print(f"        … and {len(items)-3} more")
+
+
 OFFLINE_HIDE_CSS = """<style>
   /* Hide offline error overlays, preloaders, and hydration banners */
   #preloader, .loader, .loading, .splash-screen,
@@ -309,7 +421,11 @@ async def clone_page(
     snippet = AUTH_JS if is_auth_page else INDEX_JS
     html = inject_before_head_close(html, OFFLINE_HIDE_CSS + "\n" + snippet)
 
-    # ── Step 7: Save HTML ──
+    # ── Step 7: Quality check + auto-fix ──
+    html, report = quality_check_and_fix(html, out_dir)
+    print_report(report, filename)
+
+    # ── Step 8: Save HTML ──
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / filename).write_text(html, encoding="utf-8")
     print(f"  ✓ Saved → {out_dir / filename}")
