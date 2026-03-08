@@ -314,11 +314,42 @@ self.addEventListener('fetch', (event) => {
             self.log_message.emit(f"   🔍 Personal data detected: " + ", ".join(f"{k}:{len(v)}" for k, v in detected.items() if v))
         html_content = sanitizer.sanitize(html_content, real_user=hide_username or "")
 
-        # ── 2. Direct URL string replacement (no DOM parse) ──
-        # Sort longest URLs first to avoid partial matches (e.g. /img/a.png before /img/a)
+        # ── 2. URL rewriting ──
+        # Pass A: exact absolute URL match (longest first to avoid partial replacements)
         for orig_url, local_path in sorted(self._url_to_local.items(), key=lambda x: -len(x[0])):
             if orig_url in html_content:
                 html_content = html_content.replace(orig_url, depth_prefix + local_path)
+
+        # Pass B: resolve remaining src/href/poster attributes that weren't caught
+        # by exact string match (e.g. relative URLs like /path/to/file.css)
+        _ATTR_RE_DQ = re.compile(r'(\b(?:src|href|poster|action|data-src)=")([^"]+?)(")')
+        _ATTR_RE_SQ = re.compile(r"(\b(?:src|href|poster|action|data-src)=')([^']+?)(')")
+
+        def _rewrite_attr(m: re.Match) -> str:
+            url = m.group(2)
+            if not url or url.startswith(('data:', 'blob:', '#', 'javascript:', './')):
+                return m.group(0)
+            abs_url = urljoin(base_url, url)
+            local = self._find_local_path(abs_url)
+            if local:
+                return m.group(1) + depth_prefix + local + m.group(3)
+            return m.group(0)
+
+        html_content = _ATTR_RE_DQ.sub(_rewrite_attr, html_content)
+        html_content = _ATTR_RE_SQ.sub(_rewrite_attr, html_content)
+
+        # Pass C: url(...) inside inline style attributes and <style> blocks
+        def _rewrite_css_url(m: re.Match) -> str:
+            raw = m.group(1).strip().strip("'\"")
+            if not raw or raw.startswith(('data:', 'blob:')):
+                return m.group(0)
+            abs_url = urljoin(base_url, raw)
+            local = self._find_local_path(abs_url)
+            if local:
+                return f"url('{depth_prefix}{local}')"
+            return m.group(0)
+
+        html_content = re.sub(r"url\(([^)]+)\)", _rewrite_css_url, html_content)
 
         # ── 3. Lazy-load: rename data-src / data-lazy / data-original → src ──
         for lazy_attr in ['data-src', 'data-lazy', 'data-original', 'data-lazy-src']:

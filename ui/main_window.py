@@ -463,7 +463,6 @@ class MainWindow(QMainWindow):
         self.preview_btn.setObjectName("previewButton")
         self.preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.preview_btn.setEnabled(False)
-        self.preview_btn.clicked.connect(self._start_preview_server)
         bottom_row.addWidget(self.preview_btn)
 
         self.open_folder_btn = QPushButton("📂 Open Output Folder")

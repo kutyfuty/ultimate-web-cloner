@@ -538,9 +538,8 @@ class ScraperEngine(QObject):
             self.progress_updated.emit(75)
             await self._convert_lazy_attributes(page_out)
 
-            self.log_message.emit("🎨 Embedding CSS rules into page...")
             self.progress_updated.emit(82)
-            await self._inline_all_css(page_out)
+            # CSS inlining disabled: CSS files are downloaded locally and rewritten by asset_manager
 
             await self._extract_shadow_dom(page_out)
             await self._extract_iframes(page_out, url)
@@ -657,7 +656,6 @@ class ScraperEngine(QObject):
                     
                 await self._scroll_to_bottom(page_m)
                 await self._convert_lazy_attributes(page_m)
-                await self._inline_all_css(page_m)
                 await self._freeze_canvases(page_m)
                 await self._capture_favicons(page_m)
                 await self._inline_svg_sprites(page_m)
