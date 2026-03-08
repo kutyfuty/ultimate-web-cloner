@@ -293,13 +293,10 @@ self.addEventListener('fetch', (event) => {
 
     def rewrite_html(self, html_content: str, base_url: str, local_filename: str = "", hide_username: str = "", is_auth_page: bool = False) -> str:
         """
-        HTML içindeki tüm URL referanslarını yerel yollarla değiştir.
-
-        İşlenen attribute'lar:
-        - src, href, srcset, poster, data-src, data-srcset
-        - style attribute'ındaki url(...)
-        - <style> blokları içindeki url(...)
-        - <link> ve <script> etiketlerinin href/src'leri
+        Rewrite all asset URLs in HTML to local paths using regex/string
+        operations only — no BeautifulSoup, no lxml, no str(soup).
+        This prevents SVG path data, CSS values, and Tailwind class names
+        from being corrupted by the HTML parser.
         """
         self.log_message.emit("🔗 HTML yolları yerel referanslara dönüştürülüyor...")
         
@@ -308,690 +305,138 @@ self.addEventListener('fetch', (event) => {
         if local_filename:
             normalized_name = local_filename.replace("\\", "/")
             if "/" in normalized_name:
-                depth = normalized_name.count("/")
-                depth_prefix = "../" * depth
+                depth_prefix = "../" * normalized_name.count("/")
 
-        # ── Tam Veri Maskeleme (Sanitizer) ──
-        # Kullanıcı adı + otomatik bakiye + telefon + e-posta + kripto + IBAN
+        # ── 1. Personal data sanitization (string-based, safe) ──
         sanitizer = DataSanitizer()
         detected = sanitizer.auto_detect(html_content)
         if any(detected.values()):
-            found_summary = ", ".join(
-                f"{k}:{len(v)}" for k, v in detected.items() if v
-            )
-            self.log_message.emit(f"   🔍 Kişisel veri tespiti: {found_summary}")
-
+            self.log_message.emit(f"   🔍 Personal data detected: " + ", ".join(f"{k}:{len(v)}" for k, v in detected.items() if v))
         html_content = sanitizer.sanitize(html_content, real_user=hide_username or "")
-        if hide_username and len(hide_username) >= 2:
-            self.log_message.emit(f"   🔐 '{hide_username}' + bakiye/telefon/email/kripto maskelendi")
 
-        # ── SVG Koruma: lxml parse sırasında inline SVG'ler bozulabilir.
-        # Tüm <svg>...</svg> bloklarını placeholder ile değiştir, parse sonrası geri koy.
-        svg_blocks: list[str] = []
-        svg_placeholder_re = re.compile(r'<svg[\s>].*?</svg>', re.DOTALL | re.IGNORECASE)
+        # ── 2. Direct URL string replacement (no DOM parse) ──
+        # Sort longest URLs first to avoid partial matches (e.g. /img/a.png before /img/a)
+        for orig_url, local_path in sorted(self._url_to_local.items(), key=lambda x: -len(x[0])):
+            if orig_url in html_content:
+                html_content = html_content.replace(orig_url, depth_prefix + local_path)
 
-        def _extract_svg(m: re.Match) -> str:
-            idx = len(svg_blocks)
-            svg_blocks.append(m.group(0))
-            return f'<div data-svg-placeholder="{idx}"></div>'
+        # ── 3. Lazy-load: rename data-src / data-lazy / data-original → src ──
+        for lazy_attr in ['data-src', 'data-lazy', 'data-original', 'data-lazy-src']:
+            html_content = re.sub(
+                rf'\s{re.escape(lazy_attr)}=("([^"]*?)"|\'([^\']*?)\')',
+                lambda m: f' src={m.group(1)}',
+                html_content,
+            )
 
-        html_content = svg_placeholder_re.sub(_extract_svg, html_content)
+        # ── 4. Remove CSP meta tags and base tags ──
+        html_content = re.sub(r'<meta[^>]+content-security-policy[^>]*>', '', html_content, flags=re.IGNORECASE)
+        html_content = re.sub(r'<base\b[^>]*/?\s*>', '', html_content, flags=re.IGNORECASE)
 
-        soup = BeautifulSoup(html_content, "lxml")
+        # ── 5. Build script block to inject into <head> ──
+        safe_depth = depth_prefix.replace("'", "\\'")
+        auth_js_val = "true" if is_auth_page else "false"
 
-        # ── Statik Mühürleme: Guest-mode sayfalarında login/register butonlarını koru ──
-        if not is_auth_page:
-            sealed = self._seal_static_elements(soup)
-            if sealed > 0:
-                self.log_message.emit(f"   🔒 {sealed} element statik mühürlendi (React/Vue bağları koparıldı)")
+        # 5a. Permissive CSP
+        csp_meta = '<meta http-equiv="Content-Security-Policy" content="default-src * \'unsafe-inline\' \'unsafe-eval\' data: blob:;">'
 
-        # ── (Phase 21) Smart Offline & Script Lobotomy — Head Düzenlemeleri ──
-        head = soup.find("head")
-        if head:
-            # 1. Anti-Duplication (Çiftleme Katili - Gözlemci)
-            # Sitenin orijinal JS'inin aynı elementleri çiftlemesini engeller.
-            anti_dup_script = soup.new_tag("script")
-            anti_dup_script.string = """
-window.addEventListener('DOMContentLoaded', () => {
-  const observer = new MutationObserver((mutations) => {
-    mutations.forEach((mutation) => {
-      mutation.addedNodes.forEach((node) => {
-        if (node.nodeType === 1 && node.previousElementSibling) {
-          // Eğer yeni eklenen element, bir önceki elementle BİREBİR aynı HTML'e sahipse, onu anında yok et
-          if (node.outerHTML === node.previousElementSibling.outerHTML) {
-            node.remove();
-          }
-        }
-      });
-    });
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-});
-            """
-            head.insert(0, anti_dup_script)
-
-            # 2. Kök Dizin Yönlendirmesi ve Global Yakalayıcı (404 Çözümü)
-            redirect_script = soup.new_tag("script")
-            redirect_script.string = f"""
+        # 5b. Login redirect → index_auth.html
+        login_redirect = f"""<script>
 document.addEventListener('click', function(e) {{
-  const submitBtn = e.target.closest('button[type="submit"], .login-btn, [class*="login"]');
-  const form = e.target.closest('form') || document.querySelector('input[type="password"]')?.closest('div');
-
-  if (submitBtn || (form && form.contains(e.target))) {{
+  var btn = e.target.closest('button[type="submit"], .login-btn, [class*="login"]');
+  var pwd = document.querySelector('input[type="password"]');
+  var form = e.target.closest('form') || (pwd && pwd.closest('div'));
+  if (btn || (form && form.contains(e.target))) {{
     e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
-    const pwdInput = document.querySelector('input[type="password"]');
-    if (pwdInput) {{
-      // Redirect to the pre-cloned authenticated view
-      window.location.href = '{depth_prefix}index_auth.html';
-    }}
+    if (document.querySelector('input[type="password"]'))
+      window.location.href = '{safe_depth}index_auth.html';
   }}
 }}, true);
-            """
-            head.insert(1, redirect_script)
+</script>"""
 
-            # 3. Permissive CSP meta tag — localhost'ta CORS hatalarını susturur
-            existing_csp = head.find("meta", attrs={"http-equiv": "Content-Security-Policy"})
-            if not existing_csp:
-                csp_tag = soup.new_tag("meta")
-                csp_tag["http-equiv"] = "Content-Security-Policy"
-                csp_tag["content"] = "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
-                head.insert(2, csp_tag)
+        # 5c. Offline utilities (broken image hide, form toast)
+        offline_utils = f"""<script>
+(function() {{
+  window.__IS_AUTH = {auth_js_val};
+  window.addEventListener('error', function(e) {{
+    if (e.target && e.target.tagName === 'IMG') e.target.style.visibility = 'hidden';
+  }}, true);
+  document.addEventListener('submit', function(e) {{
+    e.preventDefault(); e.stopPropagation();
+    var t = document.createElement('div');
+    t.style.cssText = 'position:fixed;top:20px;right:20px;background:#10B981;color:#fff;padding:14px 20px;border-radius:8px;z-index:999999;font-family:system-ui,sans-serif;font-size:14px;';
+    t.textContent = 'Operation completed successfully.';
+    document.body.appendChild(t);
+    setTimeout(function(){{ t.remove(); }}, 3000);
+  }}, true);
+}})();
+</script>"""
 
-            # Viewport — orijinal viewport'u koru, yoksa standart değer ekle
-            existing_vp = head.find("meta", attrs={"name": "viewport"})
-            if not existing_vp:
-                vp_tag = soup.new_tag("meta")
-                vp_tag["name"] = "viewport"
-                vp_tag["content"] = "width=device-width, initial-scale=1"
-                head.insert(3, vp_tag)
+        # 5d. PWA / service worker
+        pwa_tags = f'<link rel="manifest" href="{safe_depth}manifest.json"><script>if("serviceWorker"in navigator)navigator.serviceWorker.register("{safe_depth}offline-sw.js").catch(function(){{}});</script>'
 
-            # ── Pillar 4: Auto-Service Worker (PWA Payload) ──
-            # 1. Manifest tag'i ekle
-            manifest_tag = soup.new_tag("link")
-            manifest_tag["rel"] = "manifest"
-            manifest_tag["href"] = depth_prefix + "manifest.json"
-            head.insert(1, manifest_tag)
-            
-            # 2. Service Worker Kayıt Script'i
-            sw_script = soup.new_tag("script")
-            sw_script.string = f"""
-if ('serviceWorker' in navigator) {{
-    window.addEventListener('load', function() {{
-        navigator.serviceWorker.register('{depth_prefix}offline-sw.js').then(function(registration) {{
-            console.log('PWA ServiceWorker registration successful with scope: ', registration.scope);
-        }}, function(err) {{
-            console.log('PWA ServiceWorker registration failed: ', err);
-        }});
-    }});
-}}
-"""
-            head.insert(2, sw_script)
-
-            # ── Preloader İmha CSS'i ──
-            preloader_css = soup.new_tag("style")
-            preloader_css.string = """
-#preloader, .preloader, .loading, .loader, .spinner, .page-loader,
-.loader-wrapper, .loading-screen, .loading-overlay, .splash-screen,
-#loader, [data-loader], .sk-spinner, .lds-ring, .pace, .nprogress {
-    display: none !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-    z-index: -9999 !important;
-    pointer-events: none !important;
-}
-body {
-    overflow: auto !important;
-    position: static !important;
-}
-html {
-    overflow: auto !important;
-}
-"""
-            head.append(preloader_css)
-
-        # ── Preloader DOM Silme (Decompose) ──
-        preloader_selectors = [
-            '#preloader', '.preloader', '.loader', '.loader-wrapper',
-            '.loading-screen', '.loading-overlay', '.splash-screen',
-            '#loader', '[data-loader]', '.page-loader', '.spinner',
-            '.sk-spinner', '.lds-ring', '.pace', '.nprogress',
-        ]
-        preloader_removed = 0
-        for sel in preloader_selectors:
-            for el in soup.select(sel):
-                el.decompose()
-                preloader_removed += 1
-        if preloader_removed > 0:
-            self.log_message.emit(f"   🗑️ {preloader_removed} preloader elementi DOM'dan silindi")
-        
-        # ── Lazy-Load Dönüştürücü (data-src → src) ──
-        lazy_attrs = ['data-src', 'data-lazy', 'data-original', 'data-bg', 'data-image']
-        lazy_srcset = ['data-srcset', 'data-lazy-srcset']
-        lazy_converted = 0
-        for tag in soup.find_all(True):
-            # data-src → src
-            for attr in lazy_attrs:
-                val = tag.get(attr)
-                if val and not tag.get('src'):
-                    tag['src'] = val
-                    del tag[attr]
-                    lazy_converted += 1
-                elif val:
-                    del tag[attr]
-            # data-srcset → srcset
-            for attr in lazy_srcset:
-                val = tag.get(attr)
-                if val and not tag.get('srcset'):
-                    tag['srcset'] = val
-                    del tag[attr]
-                    lazy_converted += 1
-                elif val:
-                    del tag[attr]
-            # loading="lazy" kaldır
-            if tag.get('loading') == 'lazy':
-                del tag['loading']
-
-        if lazy_converted > 0:
-            self.log_message.emit(f"   🖼️ {lazy_converted} lazy-load attribute → src/srcset dönüştürüldü")
-
-        # ── <base> etiketini bul ve çözümleme için kullan ──
-        base_url_for_assets = base_url
-        base_tag = soup.find("base")
-        if base_tag and base_tag.get("href"):
-            b_href = base_tag.get("href")
-            base_url_for_assets = urljoin(base_url, b_href)
-            
-        # Göreceli yollari bozmamak icin base tagini kaldiralim
-        for bt in soup.find_all("base"):
-            bt.decompose()
-
-        # ── Viewport meta etiketi ekle (mobil uyumluluk) ──
-        if not soup.find("meta", attrs={"name": "viewport"}):
-            head = soup.find("head")
-            if head:
-                from bs4 import Tag
-                viewport_meta = Tag(name="meta")
-                viewport_meta["name"] = "viewport"
-                viewport_meta["content"] = "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
-                head.insert(0, viewport_meta)
-
-        # ── İllüzyonist Motoru (Sadece Temel Araçlar — Klon Kalitesi İçin) ──
-        illusion_script = """
-        (() => {
-            console.log('[Cloner] İllüzyonist Motoru Başlatılıyor...');
-
-            // 1. ZAMAN YOLCULUĞU (TIME-TRAVEL)
-            // Countdown/geri sayım mekanizmalarını sonsuz döngüde tutar
-            const originalDateNow = Date.now;
-            const START_TIME = originalDateNow();
-            Date.now = function() {
-                let elapsed = originalDateNow() - START_TIME;
-                let loopedElapsed = elapsed % (5 * 60 * 1000);
-                return START_TIME + loopedElapsed;
-            };
-
-            // 2. FORM SPOOFER (Başarılı Toast)
-            // Herhangi bir form gönderildiğinde çökmeyi önler
-            const showSuccessToast = (message = "İşleminiz başarıyla gerçekleştirildi.") => {
-                let toast = document.createElement('div');
-                toast.innerHTML = `
-                    <div style="position:fixed; top:20px; right:20px; max-width: 350px; background:#10B981; color:white; padding:16px 24px; border-radius:8px; display:flex; align-items:center; gap:12px; font-family:system-ui,-apple-system,sans-serif; font-size:15px; font-weight:500; z-index:999999; box-shadow:0 10px 15px -3px rgba(0,0,0,0.1); transform:translateX(120%); transition:transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
-                        <span>${message}</span>
-                    </div>
-                `;
-                document.body.appendChild(toast);
-                requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        toast.firstElementChild.style.transform = 'translateX(0)';
-                    });
-                });
-                setTimeout(() => {
-                    toast.firstElementChild.style.transform = 'translateX(120%)';
-                    setTimeout(() => toast.remove(), 400);
-                }, 3000);
-            };
-
-            // Form submit'lerini yakala
-            document.addEventListener('submit', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                showSuccessToast();
-            }, true);
-
-            // 3. KIRIK GÖRSELLERİ GİZLE
-            window.addEventListener('error', function(e) {
-                if (e.target && e.target.tagName === 'IMG') {
-                    e.target.style.display = 'none';
-                    e.target.style.opacity = '0';
-                    e.target.style.visibility = 'hidden';
-                }
-            }, true);
-
-            // 4. DİNAMİK İSİM DEĞİŞTİRİCİ (Username Spoofer)
-            // LocalStorage'daki ismi bulur ve sayfadaki 'Misafir' veya 'Log In' alanlarına yerleştirir
-            const updateDynamicUsernames = () => {
-                const injectedUser = "__CLONER_USERNAME__";
-                const mockUser = localStorage.getItem('universalMockUser') || injectedUser || localStorage.getItem('__cloner_source_username');
-                if (mockUser && mockUser !== "Misafir" && !mockUser.includes("__CLONER")) {
-                    // Sayfadaki 'Misafir', 'Giriş', 'Login', 'Üye Ol' içeren metinleri tara
-                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-                    let node;
-                    while(node = walker.nextNode()) {
-                        if (node.parentElement.tagName === 'SCRIPT' || node.parentElement.tagName === 'STYLE') continue;
-                        const text = node.nodeValue;
-                        if (text.includes('Misafir') || text.includes('Giriş Yap') || text.includes('Login') || text.includes('Register')) {
-                            node.nodeValue = text.replace(/Misafir|Giriş Yap|Login|Register/g, mockUser);
-                        }
-                    }
-                }
-            };
-            window.addEventListener('load', updateDynamicUsernames);
-            setTimeout(updateDynamicUsernames, 1000); 
-
-            // 5. AUTH STATE
-            window.__IS_AUTH = __IS_AUTH_TARGET__;
-
-        })();
-        """
-        # Phase 20: is_auth_page değişkenini JS içine göm
-        auth_js_val = "true" if is_auth_page else "false"
-        illusion_script = illusion_script.replace("__IS_AUTH_TARGET__", auth_js_val)
-        illusion_script = illusion_script.replace("__CLONER_USERNAME__", hide_username or "")
-        
-        head = soup.find("head")
-        if head:
-            illusion_tag = soup.new_tag("script")
-            illusion_tag.string = illusion_script
-            head.insert(0, illusion_tag)
-
-        # ── State Stealer: LocalStorage Geri Yükleme (Phase 12) ──
-        # Phase 20: Sadece index_auth.html'ye (is_auth_page=True) enjekte et!
-        # index.html'in temiz/çıkış yapılmış kalması gerekiyor.
+        # 5e. LocalStorage restore (auth page only)
+        ls_script = ""
         auth_file = self.output_dir / "auth_state.json"
         if auth_file.exists() and is_auth_page:
-            head = soup.find("head")
-            if head:
-                try:
-                    import json
-                    auth_data = json.loads(auth_file.read_text(encoding="utf-8"))
-                    origins = auth_data.get("origins", [])
-                    if origins:
-                        # Extract localStorage from the first origin
-                        ls_items = origins[0].get("localStorage", [])
-                        if ls_items:
-                            ls_script = "(() => {\n"
-                            ls_script += "  console.log('[Cloner] Geri yüklenen LocalStorage verileri...');\n"
-                            for item in ls_items:
-                                key = item.get("name", "").replace("'", "\\'")
-                                val = item.get("value", "").replace("'", "\\'")
-                                ls_script += f"  localStorage.setItem('{key}', '{val}');\n"
-                            ls_script += "})();"
-                            
-                            from bs4 import Tag
-                            script_tag = soup.new_tag("script")
-                            script_tag.string = ls_script
-                            head.insert(0, script_tag)
-                            self.log_message.emit("🔄 State Stealer: LocalStorage verileri index_auth.html içine gömüldü.")
-                except Exception as e:
-                    self.log_message.emit(f"⚠️ LocalStorage gömme hatası: {e}")
+            try:
+                import json as _json
+                auth_data = _json.loads(auth_file.read_text(encoding="utf-8"))
+                origins = auth_data.get("origins", [])
+                if origins:
+                    ls_items = origins[0].get("localStorage", [])
+                    if ls_items:
+                        lines = "\n".join(
+                            f"  localStorage.setItem('{i.get('name','').replace(chr(39),chr(92)+chr(39))}','{i.get('value','').replace(chr(39),chr(92)+chr(39))}');"
+                            for i in ls_items
+                        )
+                        ls_script = f"<script>(function(){{\n{lines}\n}})();</script>"
+            except Exception:
+                pass
 
-        # ── God Mode Phase 12: HLS Video Kesintisiz Döngü (Live Stream Spoofer) ──
-        # Bu sistem, çekilen ".m3u8" videolarının çevrimdışıyken hata vermesi yerine
-        # tarayıcıda sonsuza kadar döngüde oynamasını sağlar.
-        
-        # (Phase 7) Redundant CSP Removed - Already handled in Phase 21 Block
-
-        hls_script = """
-        document.addEventListener('DOMContentLoaded', () => {
-            const hlsPlayerBase = "https://cdn.jsdelivr.net/npm/hls.js@latest";
-            let hlsInjected = false;
-
-            const makeVideoLoop = (video) => {
-                video.autoplay = true;
-                video.loop = true;
-                video.muted = true;
-                video.controls = false;
-                video.setAttribute('playsinline', '');
-                video.style.pointerEvents = 'none';
-
-                let src = video.getAttribute('src');
-                let sourceUrl = src;
-
-                if (!src) {
-                    let sourceTag = video.querySelector('source');
-                    if (sourceTag) sourceUrl = sourceTag.getAttribute('src');
-                }
-
-                if (sourceUrl && sourceUrl.includes('.m3u8')) {
-                    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                        // Native HLS (Safari)
-                        video.src = sourceUrl;
-                    } else {
-                        // HLS.js polyfill
-                        if (!hlsInjected) {
-                            let script = document.createElement('script');
-                            script.src = hlsPlayerBase;
-                            script.onload = () => bindHls(video, sourceUrl);
-                            document.head.appendChild(script);
-                            hlsInjected = true;
-                        } else if (window.Hls) {
-                            bindHls(video, sourceUrl);
-                        } else {
-                            setTimeout(() => { if (window.Hls) bindHls(video, sourceUrl); }, 500);
-                        }
-                    }
-                }
-            };
-
-            const bindHls = (video, url) => {
-                if (Hls.isSupported()) {
-                    const hls = new Hls({ debug: false, maxBufferLength: 5 });
-                    hls.loadSource(url);
-                    hls.attachMedia(video);
-                    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(e=>console.log(e)));
-                    hls.on(Hls.Events.ERROR, (e, data) => {
-                        if (data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                            console.log('[Cloner] HLS Loop Restoring...');
-                            hls.startLoad();
-                        }
-                    });
-                }
-            };
-
-            document.querySelectorAll('video').forEach(makeVideoLoop);
-
-            // Dinamik yüklenen videolar için
-            new MutationObserver((mutations) => {
-                mutations.forEach(m => {
-                    m.addedNodes.forEach(n => {
-                        if (n.tagName === 'VIDEO') makeVideoLoop(n);
-                        else if (n.querySelectorAll) {
-                            n.querySelectorAll('video').forEach(makeVideoLoop);
-                        }
-                    });
-                });
-            }).observe(document.body, {childList: true, subtree: true});
-        });
-        """
-        head = soup.find("head")
-        if head:
-            script_tag = soup.new_tag("script")
-            script_tag.string = hls_script
-            head.insert(0, script_tag)
-
-        # ── (Phase 7) Lazy-Load Neutralization ──
-        # data-src, data-lazy, data-original gibi nitelikleri src'ye zorla (promote)
-        lazy_attrs = [
-            "data-src", "data-lazy", "data-original", "data-lazy-src", 
-            "data-srcset", "data-bg", "data-background-image", "data-img-url"
-        ]
-
-        # ── src, href attribute'ları ──
-        for tag in soup.find_all(True):
-            # Tembel yükleme iptali: data-src'yi src yap
-            for l_attr in lazy_attrs:
-                val = tag.get(l_attr)
-                if val and isinstance(val, str):
-                    if tag.name == "img":
-                        tag["src"] = val
-                    elif tag.name == "source":
-                        tag["src"] = val
-                    elif "background" in l_attr:
-                        tag["style"] = (tag.get("style", "") + f"; background-image: url('{val}');").strip(" ;")
-
-            for attr in ["src", "href", "poster"] + lazy_attrs:
-                value = tag.get(attr)
-                if not value or not isinstance(value, str):
-                    continue
-
-                value = value.strip()
-
-                # Phantom/boş referansları atla (BS4 ayrıştırma artefaktları)
-                if value in ('//:0', '//:', '', '#', 'javascript:void(0)', 'javascript:;'):
-                    continue
-
-                # srcset özel formatı (virgülle ayrılmış)
-                if attr in ("srcset", "data-srcset"):
-                    new_srcset = self._rewrite_srcset(value, base_url, depth_prefix)
-                    tag[attr] = new_srcset
-                    continue
-
-                # Normal URL
-                abs_url = urljoin(base_url_for_assets, value)
-                local = self._find_local_path(abs_url)
-                if local:
-                    tag[attr] = depth_prefix + local
-
-            # style attribute'ındaki url(...)
-            style_val = tag.get("style")
-            if style_val and isinstance(style_val, str) and "url(" in style_val:
-                tag["style"] = self._rewrite_css_urls(style_val, base_url_for_assets, depth_prefix=depth_prefix)
-
-        # ── <style> blokları ──
-        for style_tag in soup.find_all("style"):
-            if style_tag.string:
-                style_tag.string = self._rewrite_css_urls(style_tag.string, base_url_for_assets, depth_prefix=depth_prefix)
-
-        # ── <link rel="stylesheet"> -> yerel CSS'e dönüştür ──
-        # Bu zaten yukarıdaki href döngüsünde yakalanıyor.
-
-        # ── (Phase 21) Harici Script Temizleme — Sadece indirilemeyenler ──
-        # Yerel yola dönüştürülemeyen (hala http/https ile başlayan) scriptleri kaldır.
-        # İndirilen ve yerel yola yazılan scriptlere dokunma.
-        lobotomy_count = 0
-        for script in soup.find_all('script', src=True):
-            src_val = script.get('src', '')
-            # Hala dışarıya işaret ediyorsa (rewriting başarısız oldu) kaldır
-            if src_val.startswith(('http://', 'https://', '//')):
-                script.decompose()
-                lobotomy_count += 1
-        if lobotomy_count > 0:
-            self.log_message.emit(f"   ✂️  {lobotomy_count} yerelleştirilemeyen harici script kaldırıldı")
-
-        # ── Orijinal JavaScript'i Koru (Alive JS) & Tracking Kodlarını Sustur ──
-        # Not: Yukarıdaki lobotomi framework dosyalarını sildi, bu kısım diğer yardımcı JS'leri ve casusları işler.
-        tracking_domains = [
-            "yandex", "google-analytics.com", "googletagmanager.com",
-            "facebook", "doubleclick.net", "zendesk", "tawk.to",
-            "crisp.chat", "hotjar", "clarity.ms", "smartsupp", "tidio"
-        ]
-        
-        removed_trackers = 0
-        for tag in soup.find_all(["img", "iframe", "link", "script"]):
-            src = tag.get("src", "") or tag.get("href", "")
-            # Harici src'li casusluk (Script Lobotomisi src scriptleri sildi ama img/iframe/link kalabilir)
-            if src and any(domain in src.lower() for domain in tracking_domains):
-                tag.decompose()
-                removed_trackers += 1
-            # Satıriçi (inline) script casusluk
-            elif tag.name == "script" and tag.string and any(domain in tag.string.lower() for domain in tracking_domains):
-                tag.decompose()
-                removed_trackers += 1
-                
-        if removed_trackers > 0:
-            self.log_message.emit(f"   🗑️  {removed_trackers} casus/tracking kodu yokedildi")
-
-        # ── Inline event handler'larını BİLİNÇLİ Koru ──
-        # Eskiden tüm onclick/onload siliyorduk, bu menüleri ve sekmeleri bozuyordu.
-        # Artık sadece dışarıya giden veya tracking yapan tehlikeli eventleri süzüyoruz.
-        inline_events = ["onclick", "onload", "onerror", "onmouseover", "onsubmit"]
-        for tag in soup.find_all(True):
-            for event_attr in inline_events:
-                if tag.has_attr(event_attr):
-                    val = tag[event_attr].lower()
-                    if "yandex" in val or "google" in val or "facebook" in val or "track" in val:
-                        del tag[event_attr]
-                    # Mesru scriptler kalsın (örn: onmouseover="this.play()", onclick="toggleMenu()")
-
-        # ── Eksik Favicon'u HTML'e Gömme ──
-        # Eğewr sayfanın orijinalinde <link rel="icon"> yoksa ancak biz bir .ico indirdiysek, manuel ekle.
-        # Bu sayede file:/// protokülünde (sunucuz) bile sekme ikonu kusursuz görünür.
-        if head and not soup.find("link", rel=lambda r: r and "icon" in r.lower()):
-            for orig_url, loc_path in self._url_to_local.items():
-                if "favicon.ico" in orig_url.lower() or orig_url.lower().endswith(".ico"):
-                    fav_tag = soup.new_tag("link", rel="icon", href=depth_prefix + loc_path)
-                    head.append(fav_tag)
-                    self.log_message.emit("🔖 Favicon etiketi orijinal HTML'e zorla gömüldü.")
-                    break
-
-        # ── Phase 17: Kullanıcı Adı Maskeleme (Dynamic Username Spoofer) ──
-        if hide_username and len(hide_username) > 2:
-            pattern = re.compile(re.escape(hide_username), re.IGNORECASE)
-            masked_count = 0
-            for text_node in soup.find_all(string=pattern):
-                if text_node.parent and text_node.parent.name in ['script', 'style', 'title', 'meta']:
-                    continue
-                try:
-                    new_html = pattern.sub(r'<span class="illusion-username">\g<0></span>', str(text_node))
-                    if new_html != str(text_node):
-                        new_soup = BeautifulSoup(new_html, 'html.parser')
-                        text_node.replace_with(new_soup)
-                        masked_count += 1
-                except Exception:
-                    continue
-            if masked_count > 0:
-                self.log_message.emit(f"🎭 Maskeleme: {masked_count} alandaki kaynak kullanıcı adı gizlendi.")
-
-        # ── iFrame Sanitizasyonu (Harici Oyun Çökme Önleme) ──
-        base_parsed = urlparse(base_url)
-        base_domain = base_parsed.netloc
-        sanitized_iframes = 0
-        for iframe in soup.find_all("iframe"):
-            iframe_src = iframe.get("src", "") or ""
-            iframe_src = iframe_src.strip()
-
-            # Boş, blob: veya harici domain kontrolü
-            is_external = False
-            if not iframe_src or iframe_src.startswith("blob:") or iframe_src.startswith("javascript:"):
-                is_external = True
-            elif iframe_src.startswith("http://") or iframe_src.startswith("https://"):
-                iframe_parsed = urlparse(iframe_src)
-                if iframe_parsed.netloc and iframe_parsed.netloc != base_domain:
-                    is_external = True
-            elif iframe_src.startswith("//"):
-                iframe_parsed = urlparse("https:" + iframe_src)
-                if iframe_parsed.netloc and iframe_parsed.netloc != base_domain:
-                    is_external = True
-
-            if is_external:
-                # Harici iframe'i placeholder div ile değiştir
-                placeholder = soup.new_tag("div")
-                placeholder["style"] = (
-                    "padding:30px; background:linear-gradient(135deg, #1a1a2e, #16213e); "
-                    "color:#e2e8f0; text-align:center; border-radius:12px; "
-                    "border:1px solid rgba(255,255,255,0.1); margin:10px 0; "
-                    "font-family:system-ui,-apple-system,sans-serif; font-size:15px;"
-                )
-                inner_icon = soup.new_tag("div")
-                inner_icon["style"] = "font-size:40px; margin-bottom:10px;"
-                inner_icon.string = "🎮"
-                placeholder.append(inner_icon)
-                inner_text = soup.new_tag("span")
-                inner_text.string = "Bu içerik çevrimdışı kullanımda desteklenmemektedir."
-                placeholder.append(inner_text)
-                iframe.replace_with(placeholder)
-                sanitized_iframes += 1
-            else:
-                # Dahili iframe'lere sandbox ekle (güvenlik)
-                iframe["sandbox"] = "allow-scripts allow-same-origin"
-
-        if sanitized_iframes > 0:
-            self.log_message.emit(f"   🛡️ {sanitized_iframes} harici iframe güvenli placeholder ile değiştirildi")
-
-        # ════════════════════════════════════════════════════════════════
-        # GLOBAL STATE INJECTOR — TÜM SAYFALARA enjekte edilir
-        # localStorage'daki offlineMockUser bilgisini her sayfada uygular
-        # ════════════════════════════════════════════════════════════════
+        # 5f. Global state injector (username display, logout handling)
         u_display_sel = ""
         if self.mocker and hasattr(self.mocker, 'username_display_selector'):
-            u_display_sel = (self.mocker.username_display_selector or "").replace("\\", "\\\\").replace("'", "\\'")
-
-        safe_depth = depth_prefix.replace("\\", "\\\\").replace("'", "\\'")
-
-        global_state_js = f"""
-(function() {{
-    const DISPLAY_SEL = '{u_display_sel}';
-    const LOGOUT_REDIRECT = '{safe_depth}index.html';
-
-    const LOGOUT_KW = ['çıkış','cikis','logout','sign out','signout','exit'];
-    const PROCESSED_LOGOUT = new WeakSet();
-
-    function applyState() {{
-        const user = localStorage.getItem('universalMockUser');
-        if (!user) return;
-
-        // ── İsim değiştirme (sıfır DOM eklentisi) ──
-        const sels = DISPLAY_SEL ? [DISPLAY_SEL] : [
-            '.user-name', '.username', '.user-info', '.account-name',
-            '.profile-name', '.member-name', '[class*="username"]',
-            '[class*="user-name"]', '[data-username]', '[data-user]',
-        ];
-        sels.forEach(s => {{
-            try {{ document.querySelectorAll(s).forEach(el => {{
-                if (el.tagName !== 'INPUT' && el.tagName !== 'SCRIPT') el.textContent = user;
-            }}); }} catch(e) {{}}
-        }});
-
-        // ── Sanitizer Placeholder Doldurma ──
-        document.querySelectorAll('.offline-dynamic-user').forEach(el => {{ el.textContent = user; }});
-        const mockBalance = localStorage.getItem('universalMockBalance') || (Math.floor(Math.random()*50000)/100).toFixed(2);
-        localStorage.setItem('universalMockBalance', mockBalance);
-        document.querySelectorAll('.offline-dynamic-balance').forEach(el => {{ el.textContent = mockBalance; }});
-
-        // ── Logout: Node Replacement (framework bağlarını kopar) ──
-        document.querySelectorAll('a, button, [role="button"]').forEach(el => {{
-            const t = (el.innerText || '').toLowerCase().trim();
-            if (!LOGOUT_KW.some(k => t.includes(k))) return;
-            if (PROCESSED_LOGOUT.has(el)) return;
-
-            const clone = el.cloneNode(true);
-            el.parentNode.replaceChild(clone, el);
-            PROCESSED_LOGOUT.add(clone);
-
-            clone.addEventListener('click', function(e) {{
-                e.preventDefault(); e.stopImmediatePropagation();
-                localStorage.removeItem('universalMockUser');
-                window.location.href = LOGOUT_REDIRECT;
-            }}, true);
-        }});
-    }}
-
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyState);
-    else applyState();
-
-    let t = null;
-    new MutationObserver(() => {{ clearTimeout(t); t = setTimeout(applyState, 200); }}).observe(document.documentElement, {{ childList: true, subtree: true }});
+            u_display_sel = (self.mocker.username_display_selector or "").replace("'", "\\'")
+        global_state = f"""<script>
+(function(){{
+  var SEL='{u_display_sel}', LOGOUT='{safe_depth}index.html';
+  var LK=['logout','sign out','signout','\u00e7\u0131k\u0131\u015f','cikis','exit'];
+  function apply(){{
+    var u=localStorage.getItem('universalMockUser'); if(!u) return;
+    var sels=SEL?[SEL]:['.user-name','.username','.account-name','[data-username]'];
+    sels.forEach(function(s){{try{{document.querySelectorAll(s).forEach(function(el){{if(el.tagName!=='INPUT'&&el.tagName!=='SCRIPT')el.textContent=u;}})}}catch(e){{}}}});
+    document.querySelectorAll('.offline-dynamic-user').forEach(function(el){{el.textContent=u;}});
+    var b=localStorage.getItem('universalMockBalance')||(Math.floor(Math.random()*50000)/100).toFixed(2);
+    localStorage.setItem('universalMockBalance',b);
+    document.querySelectorAll('.offline-dynamic-balance').forEach(function(el){{el.textContent=b;}});
+    document.querySelectorAll('a,button,[role="button"]').forEach(function(el){{
+      if(!LK.some(function(k){{return(el.innerText||'').toLowerCase().includes(k);}}))return;
+      el.addEventListener('click',function(e){{e.preventDefault();e.stopImmediatePropagation();localStorage.removeItem('universalMockUser');window.location.href=LOGOUT;}},true);
+    }});
+  }}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',apply);else apply();
+  new MutationObserver(function(){{setTimeout(apply,200);}}).observe(document.documentElement,{{childList:true,subtree:true}});
 }})();
-"""
-        gsi_block = f"<script>{global_state_js}</script>"
+</script>"""
 
-        # İlk soup serialize — tek seferlik, çift parse yok
-        result = str(soup)
+        head_inject = "\n".join(filter(None, [ls_script, csp_meta, login_redirect, offline_utils, pwa_tags, global_state]))
 
-        # ── SVG bloklarını geri yükle (placeholder → orijinal SVG)
-        if svg_blocks:
-            for idx, svg_src in enumerate(svg_blocks):
-                placeholder_tag = f'<div data-svg-placeholder="{idx}"></div>'
-                result = result.replace(placeholder_tag, svg_src, 1)
+        if "</head>" in html_content:
+            html_content = html_content.replace("</head>", head_inject + "\n</head>", 1)
+        elif re.search(r'<body[\s>]', html_content, re.IGNORECASE):
+            html_content = re.sub(r'(<body[^>]*>)', r'\1\n' + head_inject, html_content, count=1, flags=re.IGNORECASE)
+        else:
+            html_content = head_inject + "\n" + html_content
 
-        # (Phase 6) Frontend Mocking Script Injection — string üzerinde çalışır
+        # ── 6. Frontend mocker injection (string-based) ──
         if self.mocker:
             try:
-                result = self.mocker.inject_mock_scripts(result, depth_prefix=depth_prefix)
+                html_content = self.mocker.inject_mock_scripts(html_content, depth_prefix=depth_prefix)
             except Exception as e:
                 self.log_message.emit(f"⚠️ Frontend Mocker Error: {e}")
 
-        # Global State Injector'ı </body> öncesine string olarak ekle (lxml re-parse yok)
-        if "</body>" in result:
-            result = result.replace("</body>", gsi_block + "\n</body>", 1)
-        elif "</html>" in result:
-            result = result.replace("</html>", gsi_block + "\n</html>", 1)
-        else:
-            result += "\n" + gsi_block
-
-        self.log_message.emit("✅ HTML yolları güncellendi")
-        return result
+        self.log_message.emit("✅ HTML rewrite complete")
+        return html_content
 
     async def rewrite_css_files(self, base_url: str) -> None:
         """

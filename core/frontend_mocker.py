@@ -1,5 +1,4 @@
 import re
-from bs4 import BeautifulSoup
 
 
 class FrontendMocker:
@@ -22,23 +21,16 @@ class FrontendMocker:
         self.username_display_selector = username_display_selector
 
     def inject_mock_scripts(self, html_content: str, depth_prefix: str = "") -> str:
-        """Injects the invisible interceptor script into HTML content."""
-        soup = BeautifulSoup(html_content, "lxml")
-
+        """Injects the invisible interceptor script into HTML — string-only, no DOM parse."""
         js_payload = self._generate_payload(depth_prefix)
+        script_block = f"<script>\n{js_payload}\n</script>"
 
-        script_tag = soup.new_tag("script")
-        script_tag.string = js_payload
-
-        head = soup.find("head")
-        if head:
-            head.insert(0, script_tag)
-        elif soup.find("html"):
-            soup.find("html").insert(0, script_tag)
+        if "</head>" in html_content:
+            return html_content.replace("</head>", script_block + "\n</head>", 1)
+        elif re.search(r'<body[\s>]', html_content, re.IGNORECASE):
+            return re.sub(r'(<body[^>]*>)', r'\1\n' + script_block, html_content, count=1, flags=re.IGNORECASE)
         else:
-            soup.insert(0, script_tag)
-
-        return str(soup)
+            return script_block + "\n" + html_content
 
     def _generate_payload(self, depth_prefix: str = "") -> str:
         """Zero-UI JS payload — zero DOM additions, zero style changes."""
