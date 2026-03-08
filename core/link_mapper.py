@@ -1078,46 +1078,48 @@ class LinkMapper(QObject):
     def _rewrite_links_in_html(
         self, html: str, base_url: str, base_domain: str
     ) -> str:
-        soup = BeautifulSoup(html, "lxml")
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"].strip()
+        """Rewrite <a href> and <iframe src> using regex — no HTML parser,
+        so SVG paths, CSS custom properties, and Tailwind JIT class names
+        are never corrupted."""
+
+        def _map_href(href: str) -> str:
+            href = href.strip()
+            if not href or href.startswith("#"):
+                return href
             if href.endswith(".html") and not href.startswith("http"):
-                continue
+                return href
             if any(href.startswith(p) for p in self.SKIP_PATTERNS):
-                if href.startswith("javascript:"):
-                    a_tag["href"] = "#"
-                continue
-            if href.startswith("#"):
-                continue
+                return "#" if href.startswith("javascript:") else href
             full_url = urljoin(base_url, href)
             parsed = urlparse(full_url)
-
-            # (Phase 9 Iframe Support): Is full URL in the map?
             if full_url in self._scraped_pages:
-                a_tag["href"] = self._scraped_pages[full_url]
-                continue
-
+                return self._scraped_pages[full_url]
             if parsed.netloc == base_domain or not parsed.netloc:
-                if parsed.path.startswith('/api/') or parsed.path.startswith('/v1/'):
-                    a_tag["href"] = "#"
-                    continue
+                if parsed.path.startswith("/api/") or parsed.path.startswith("/v1/"):
+                    return "#"
                 clean_path = parsed.path.rstrip("/") or "/"
-                if clean_path in self._scraped_pages:
-                    a_tag["href"] = self._scraped_pages[clean_path]
-                else:
-                    # Uncloned page → leave as # instead of broken .html
-                    a_tag["href"] = "#"
-            else:
-                a_tag["href"] = "#"
+                return self._scraped_pages.get(clean_path, "#")
+            return "#"
 
-        # (Phase 9) Fix iframe src values too
-        for iframe in soup.find_all("iframe", src=True):
-            src = iframe["src"].strip()
+        def _replace_a_href(m: re.Match) -> str:
+            return m.group(1) + _map_href(m.group(2)) + m.group(3)
+
+        def _replace_iframe_src(m: re.Match) -> str:
+            src = m.group(2).strip()
             full_url = urljoin(base_url, src)
             if full_url in self._scraped_pages:
-                iframe["src"] = self._scraped_pages[full_url]
+                return m.group(1) + self._scraped_pages[full_url] + m.group(3)
+            return m.group(0)
 
-        return str(soup)
+        # <a href="..."> and <a href='...'>
+        html = re.sub(r'(<a\b[^>]*\bhref=")([^"]*?)(")', _replace_a_href, html)
+        html = re.sub(r"(<a\b[^>]*\bhref=')([^']*?)(')", _replace_a_href, html)
+
+        # <iframe src="..."> and <iframe src='...'>
+        html = re.sub(r'(<iframe\b[^>]*\bsrc=")([^"]*?)(")', _replace_iframe_src, html)
+        html = re.sub(r"(<iframe\b[^>]*\bsrc=')([^']*?)(')", _replace_iframe_src, html)
+
+        return html
 
     # ──────────────────────────────────────────────
     #  MODAL POPUP INJECTION
